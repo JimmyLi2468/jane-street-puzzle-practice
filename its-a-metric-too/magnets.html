@@ -236,17 +236,19 @@ details.rules ul { padding-left: 1.2em; margin: 0.4em 0; }
       </div>
       <div class="panel sim">
         <h2>Magnets</h2>
-        <p class="hint">Each clue pushes capitols away, harder the bigger the number (clue ÷ distance²). A 0 is already a capitol and stays put. The state borders are hidden walls we don't know yet, so forces pass straight through for now.</p>
+        <p class="hint">Clues of 2 and up push capitols away, harder for bigger numbers (clue ÷ distance²). A 1 can't hold a capitol, but it gently pulls one onto a square beside it. A 0 is already a capitol and pulls nearby magnets in until they merge with it. A magnet squeezed much harder than a typical square on this board pops off, and its red ring shows how close it is. State borders are hidden walls we don't know yet, so forces pass straight through them. Start with extra magnets and let the crowded ones pop.</p>
         <div class="simrow">
           <label for="capCount">Capitols</label>
           <div class="stepper">
             <button class="btn" id="capMinus" aria-label="Fewer capitols">−</button>
-            <input id="capCount" type="number" inputmode="numeric" min="1" value="3">
+            <input id="capCount" type="number" inputmode="numeric" min="1" value="6">
             <button class="btn" id="capPlus" aria-label="More capitols">+</button>
           </div>
           <span class="hint" id="capMax"></span>
         </div>
         <label class="slider">Capitols repel each other <output id="spacingOut"></output><input type="range" id="spacing" min="0" max="10" step="0.5" value="2"></label>
+        <label class="slider">Pull from 0s and 1s <output id="pullOut"></output><input type="range" id="pull" min="0" max="10" step="0.5" value="3"></label>
+        <label class="slider">Pop when squeezed past <output id="popAtOut"></output><input type="range" id="popAt" min="10" max="41" step="1" value="20"></label>
         <label class="slider">Jiggle at the start <output id="jiggleOut"></output><input type="range" id="jiggle" min="0" max="3" step="0.25" value="1"></label>
         <div class="row">
           <button class="btn" id="shuffleBtn">Shuffle</button>
@@ -586,19 +588,35 @@ $('nextBtn').addEventListener('click', () => step(1));
 $('randBtn').addEventListener('click', () => { const inG = boards.filter(x => x.group === board.group && x !== board); loadBoard(inG[(Math.random() * inG.length) | 0]); });
 
 // ---------- magnet simulation ----------
-// Free capitols are magnets on the board. Every clue pushes them away with force clue / distance²,
-// so big numbers shove hard and small ones barely. A 0 is already a capitol and stays pinned.
-// The hidden walls (state borders) are unknown, so forces pass straight through them for now;
-// the start-up jiggle stands in for that uncertainty. Positions are in cells, centers at i + 0.5.
-const SIM_SOFT = 0.25;      // softening (cells²) so a magnet sitting on a clue doesn't blow up
-const SIM_MOBILITY = 0.02;  // cells moved per unit of force per step (friction-dominated motion)
+// Free capitols are magnets on the board, moving as if through thick syrup (no momentum).
+//  - Clues of 2 and up push them away with force clue / distance², so big numbers shove hard.
+//  - A 1 has its capitol one step away: no magnet may stop on it, and it gently pulls nearby
+//    magnets onto an open square beside it. Strong pushes can still drag them off.
+//  - A 0 is already a capitol. It pulls nearby magnets in, and one that reaches its square merges into it.
+//  - No magnet may stop on any non-zero clue: only a 0 square can hold a capitol.
+//  - A magnet squeezed past the pop limit (pushes it can't escape, from clues, walls and other
+//    magnets) pops off the board.
+// State borders are hidden walls we don't know yet, so forces pass straight through them; the
+// start-up jiggle stands in for that uncertainty. Positions are in cells, square centers at i + 0.5.
+const SIM_SOFT = 0.25;      // softening (cells²) so a magnet right beside a clue doesn't blow up
+const SIM_MOBILITY = 0.02;  // cells moved per unit of force per step
 const SIM_MAX_STEP = 0.12;  // fastest a magnet can move in one step, in cells
 const SIM_ANNEAL = 240;     // steps over which the jiggle fades to nothing
 const SIM_MAX_STEPS = 1500;
 const SIM_BATCH = 25;
-const sim = { clues: [], pinned: [], pts: [], steps: 0, calm: 0, running: false, done: false, heat: [], runs: 0, batchLeft: 0, w: 0 };
+const PULL_REACH = 2.5;     // 0s and 1s pull magnets within this many cells, fading out over the next half cell
+const POP_NEVER = 41;       // the pop slider counts tenths of this board's typical pressure; its top turns popping off
+const FX_FRAMES = 24;
+const sim = {
+  clues: [], ones: [], pinned: [], blocked: [], zero: [], pts: [], marks: [], fx: [], popped: 0, joined: 0,
+  steps: 0, calm: 0, running: false, done: false, heat: [], runs: 0, tot: null, batchLeft: 0, w: 0, base: 1,
+};
 const simCanvas = $('simCanvas'), simCtx = simCanvas.getContext('2d');
 const cellName = i => 'R' + (((i / board.n) | 0) + 1) + 'C' + (i % board.n + 1);
+const cellOf = p => ((p.y | 0) * board.n) + (p.x | 0);
+const cellCenter = i => ({ x: i % board.n + 0.5, y: ((i / board.n) | 0) + 0.5 });
+const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+let simRaf = 0;
 
 function simMax() { return board.n * board.n; }
 function simCount() {
@@ -610,16 +628,25 @@ function setCount(k) {
   store.set('mt2mag:count', +$('capCount').value);
   simScatter();
 }
+function simOpts() {
+  return { spacing: +$('spacing').value, pull: +$('pull').value, popAt: +$('popAt').value, jiggle: +$('jiggle').value };
+}
 
 function simReset() {
   const n = board.n;
-  sim.running = false; sim.batchLeft = 0; sim.heat = new Array(n * n).fill(0); sim.runs = 0;
-  sim.clues = []; sim.pinned = [];
+  sim.running = false; sim.batchLeft = 0; sim.fx = [];
+  sim.heat = new Array(n * n).fill(0); sim.runs = 0; sim.tot = { land: 0, pop: 0, join: 0 };
+  sim.clues = []; sim.ones = []; sim.pinned = []; sim.blocked = new Array(n * n).fill(false); sim.zero = new Array(n * n).fill(false);
   board.clue.forEach((v, i) => {
     if (v < 0) return;
-    const x = i % n + 0.5, y = ((i / n) | 0) + 0.5;
-    if (v === 0) sim.pinned.push({ x, y }); else sim.clues.push({ x, y, v });
+    if (v === 0) { sim.pinned.push(cellCenter(i)); sim.zero[i] = true; return; }
+    sim.blocked[i] = true;
+    if (v === 1) sim.ones.push(Object.assign(cellCenter(i), { i }));
+    else sim.clues.push(Object.assign(cellCenter(i), { v }));
   });
+  // a 1's capitol sits on one of its open neighbours
+  for (const o of sim.ones) o.spots = nbrs(o.i, n).filter(j => !sim.blocked[j]).map(cellCenter);
+  sim.base = typicalPressure();
   $('capCount').max = simMax();
   $('capCount').value = simCount();
   $('capMax').textContent = 'max ' + simMax();
@@ -636,104 +663,186 @@ function simPlace() {
   sim.pts = cells.slice(0, simCount()).map(i => ({
     x: i % n + 0.5 + (Math.random() - 0.5) * 0.4,
     y: ((i / n) | 0) + 0.5 + (Math.random() - 0.5) * 0.4,
+    press: 0,
   }));
+  sim.marks = []; sim.popped = 0; sim.joined = 0;
   sim.steps = 0; sim.calm = 0; sim.done = false;
 }
 function simScatter() { simPlace(); drawSim(); simUi(); }
 
-// one friction-dominated step: each magnet slides along its net push; the board edge stops it
-function simStep(spacing, jiggle) {
-  const pts = sim.pts, lo = 0.5, hi = board.n - 0.5;
-  const temp = jiggle * Math.max(0, 1 - sim.steps / SIM_ANNEAL);
-  const fx = new Float64Array(pts.length), fy = new Float64Array(pts.length);
-  for (let a = 0; a < pts.length; a++) {
-    const p = pts[a];
-    let gx = 0, gy = 0;
-    const push = (x, y, q) => {
-      const dx = p.x - x, dy = p.y - y, r2 = dx * dx + dy * dy + SIM_SOFT, f = q / (r2 * Math.sqrt(r2));
-      gx += f * dx; gy += f * dy;
-    };
-    for (const c of sim.clues) push(c.x, c.y, c.v);
-    if (spacing > 0) {
-      for (const c of sim.pinned) push(c.x, c.y, spacing);
-      for (let b = 0; b < pts.length; b++) if (b !== a) push(pts[b].x, pts[b].y, spacing);
-    }
-    fx[a] = gx; fy[a] = gy;
+// a magnet that strayed onto a non-zero clue goes back out over the nearest edge into an open square,
+// or, when other clues box it in, to the nearest open square
+function unblock(x, y) {
+  const n = board.n, lo = 0.5, hi = n - 0.5, c = x | 0, r = y | 0;
+  if (!sim.blocked[r * n + c]) return [x, y];
+  const exits = [[c - 0.001, y], [c + 1.001, y], [x, r - 0.001], [x, r + 1.001]]
+    .filter(([ex, ey]) => ex >= lo && ex <= hi && ey >= lo && ey <= hi && !sim.blocked[(ey | 0) * n + (ex | 0)])
+    .sort((a, b) => Math.hypot(a[0] - x, a[1] - y) - Math.hypot(b[0] - x, b[1] - y));
+  if (exits.length) return exits[0];
+  let best = null, bd = Infinity;
+  for (let i = 0; i < n * n; i++) {
+    if (sim.blocked[i]) continue;
+    const p = cellCenter(i), d = Math.hypot(p.x - x, p.y - y);
+    if (d < bd) { bd = d; best = p; }
   }
+  return best ? [best.x, best.y] : [x, y];
+}
+
+function simGone(p, kind) {
+  if (kind === 'pop') sim.popped++; else sim.joined++;
+  sim.marks.push({ x: p.x, y: p.y, kind });
+  if (!sim.batchLeft) sim.fx.push({ x: p.x, y: p.y, kind, t: 0 });
+}
+
+// net force on a magnet at p, plus the summed size of every force acting on it
+function forceOn(p, o, pts) {
+  let gx = 0, gy = 0, sum = 0;
+  const add = (fx, fy) => { gx += fx; gy += fy; sum += Math.hypot(fx, fy); };
+  const push = (x, y, q) => {
+    const dx = p.x - x, dy = p.y - y, r2 = dx * dx + dy * dy + SIM_SOFT, f = q / (r2 * Math.sqrt(r2));
+    add(f * dx, f * dy);
+  };
+  // spring toward (tx, ty) that tops out at the pull strength, felt only near the clue at (cx, cy)
+  const tug = (cx, cy, tx, ty) => {
+    const fade = Math.min(1, Math.max(0, (PULL_REACH + 0.5 - Math.hypot(p.x - cx, p.y - cy)) / 0.5));
+    const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy);
+    if (!fade || d < 1e-9) return;
+    const f = o.pull * fade * Math.min(1, d) / d;
+    add(f * dx, f * dy);
+  };
+  for (const c of sim.clues) push(c.x, c.y, c.v);
+  if (o.spacing > 0) for (const q of pts) if (q !== p) push(q.x, q.y, o.spacing);
+  if (o.pull > 0) {
+    for (const z of sim.pinned) tug(z.x, z.y, z.x, z.y);
+    for (const one of sim.ones) {
+      let best = null, bd = Infinity;
+      for (const s of one.spots) { const d = Math.hypot(s.x - p.x, s.y - p.y); if (d < bd) { bd = d; best = s; } }
+      if (best) tug(one.x, one.y, best.x, best.y);
+    }
+  }
+  return { gx, gy, sum };
+}
+// pressure: the part of the forces that cancels out (against each other or a reaction) instead of moving the magnet
+const pressure = (f, rx, ry) => (f.sum + Math.hypot(rx, ry) - Math.hypot(f.gx + rx, f.gy + ry)) / 2;
+
+// how squeezed a lone magnet would be on the median open square, from the clues alone;
+// pop limits are multiples of this, so boards packed with big clues don't pop everything
+function typicalPressure() {
+  const n = board.n, lo = 0.5, hi = n - 0.5, all = [];
+  for (let i = 0; i < n * n; i++) {
+    if (sim.blocked[i]) continue;
+    const p = cellCenter(i), f = forceOn(p, { spacing: 0, pull: 0 }, []);
+    const rx = (p.x <= lo && f.gx < 0) || (p.x >= hi && f.gx > 0) ? -f.gx : 0;
+    const ry = (p.y <= lo && f.gy < 0) || (p.y >= hi && f.gy > 0) ? -f.gy : 0;
+    all.push(pressure(f, rx, ry));
+  }
+  all.sort((a, b) => a - b);
+  return Math.max(1, all[(all.length - 1) >> 1] || 0);
+}
+const popLimit = o => o.popAt / 10 * sim.base;
+
+// one step: each magnet slides along its net force, the board edge and clue squares stop it,
+// and anything squeezed too hard or close enough to a 0 leaves the board
+function simStep(o) {
+  const pts = sim.pts, lo = 0.5, hi = board.n - 0.5;
+  const temp = o.jiggle * Math.max(0, 1 - sim.steps / SIM_ANNEAL);
+  const forces = pts.map(p => forceOn(p, o, pts));
   let moved = 0;
-  for (let a = 0; a < pts.length; a++) {
-    const p = pts[a];
-    let dx = fx[a] * SIM_MOBILITY, dy = fy[a] * SIM_MOBILITY;
+  const keep = [];
+  pts.forEach((p, a) => {
+    const { gx, gy } = forces[a];
+    let dx = gx * SIM_MOBILITY, dy = gy * SIM_MOBILITY;
     const len = Math.hypot(dx, dy);
     if (len > SIM_MAX_STEP) { dx *= SIM_MAX_STEP / len; dy *= SIM_MAX_STEP / len; }
     if (temp > 0) { dx += (Math.random() - 0.5) * temp * 0.2; dy += (Math.random() - 0.5) * temp * 0.2; }
-    const nx = Math.min(hi, Math.max(lo, p.x + dx)), ny = Math.min(hi, Math.max(lo, p.y + dy));
+    const ux = p.x + dx, uy = p.y + dy;
+    const [nx, ny] = unblock(Math.min(hi, Math.max(lo, ux)), Math.min(hi, Math.max(lo, uy)));
+    // where an edge or a clue square stopped the force, it pushes back just as hard
+    const rx = nx !== ux && Math.sign(nx - ux) === -Math.sign(gx) ? -gx : 0;
+    const ry = ny !== uy && Math.sign(ny - uy) === -Math.sign(gy) ? -gy : 0;
+    p.press = 0.85 * p.press + 0.15 * pressure(forces[a], rx, ry);
     moved = Math.max(moved, Math.hypot(nx - p.x, ny - p.y));
     p.x = nx; p.y = ny;
-  }
+    if (o.popAt < POP_NEVER && p.press > popLimit(o)) simGone(p, 'pop');
+    else if (sim.zero[cellOf(p)]) simGone(p, 'join');
+    else keep.push(p);
+  });
+  if (keep.length < pts.length) { sim.pts = keep; moved = 1; }
   sim.steps++;
   sim.calm = temp === 0 && moved < 0.002 ? sim.calm + 1 : 0;
   return sim.calm >= 20 || sim.steps >= SIM_MAX_STEPS;
 }
 
-const simCells = () => sim.pts.map(p => ((p.y | 0) * board.n) + (p.x | 0));
+const simCells = () => sim.pts.map(cellOf);
 // the heatmap counts, per square, the runs in which at least one magnet came to rest there
 function simLand() {
   sim.done = true; sim.runs++;
+  sim.tot.land += sim.pts.length; sim.tot.pop += sim.popped; sim.tot.join += sim.joined;
   for (const i of new Set(simCells())) sim.heat[i]++;
 }
 
+function kick() { if (!simRaf) simRaf = requestAnimationFrame(simFrame); }
 function simFrame() {
-  if (!sim.running) return;
-  const spacing = +$('spacing').value, jiggle = +$('jiggle').value;
-  if (sim.batchLeft > 0) {
-    // batch mode: one whole run per frame so the page stays responsive
-    simPlace();
-    while (!simStep(spacing, jiggle)) {}
-    simLand();
-    if (--sim.batchLeft === 0) sim.running = false;
-  } else {
-    let settled = false;
-    for (let s = 0; s < 2 && !settled; s++) settled = simStep(spacing, jiggle);
-    if (settled) { simLand(); sim.running = false; }
+  simRaf = 0;
+  if (sim.running) {
+    const o = simOpts();
+    if (sim.batchLeft > 0) {
+      // batch mode: one whole run per frame so the page stays responsive
+      simPlace();
+      while (!simStep(o)) {}
+      simLand();
+      if (--sim.batchLeft === 0) sim.running = false;
+    } else {
+      let settled = false;
+      for (let s = 0; s < 2 && !settled; s++) settled = simStep(o);
+      if (settled) { simLand(); sim.running = false; }
+    }
+    simUi();
   }
-  drawSim(); simUi();
-  if (sim.running) requestAnimationFrame(simFrame);
+  for (const f of sim.fx) f.t++;
+  sim.fx = sim.fx.filter(f => f.t < FX_FRAMES);
+  drawSim();
+  if (sim.running || sim.fx.length) kick();
 }
 
 function simStart() {
   if (sim.running) { sim.running = false; sim.batchLeft = 0; simUi(); return; }
   if (sim.done) simScatter();
-  sim.running = true; requestAnimationFrame(simFrame); simUi();
+  sim.running = true; kick(); simUi();
 }
 
 function simUi() {
-  const batch = sim.batchLeft > 0;
+  const batch = sim.batchLeft > 0, zeros = sim.pinned.length;
   $('runBtn').textContent = sim.running && !batch ? 'Pause' : sim.done ? 'Run again' : sim.steps ? 'Resume' : 'Start';
   $('runBtn').disabled = batch;
   $('batchBtn').textContent = batch ? 'Stop' : 'Run ' + SIM_BATCH + ' times';
   $('batchBtn').disabled = sim.running && !batch;
   $('heatClearBtn').disabled = !sim.runs;
-  $('spacingOut').textContent = (+$('spacing').value ? 'like a clue of ' + $('spacing').value : 'off');
+  $('spacingOut').textContent = +$('spacing').value ? 'like a clue of ' + $('spacing').value : 'off';
+  $('pullOut').textContent = +$('pull').value ? $('pull').value : 'off';
+  $('popAtOut').textContent = +$('popAt').value >= POP_NEVER ? 'never' : (+$('popAt').value / 10).toFixed(1) + '× typical';
   $('jiggleOut').textContent = +$('jiggle').value ? $('jiggle').value : 'off';
-  const k = sim.pts.length, pinned = sim.pinned.length;
+  const k = sim.pts.length;
+  const losses = [sim.popped && `${sim.popped} popped`, sim.joined && `${sim.joined} joined a 0`].filter(Boolean).join(', ');
   let msg;
   if (batch) msg = `Batch run ${SIM_BATCH - sim.batchLeft + 1} of ${SIM_BATCH}…`;
-  else if (sim.running) msg = `Step ${sim.steps}. ${k} magnet${k > 1 ? 's' : ''} sliding…`;
+  else if (sim.running) msg = `Step ${sim.steps}. ${plural(k, 'magnet')} sliding${losses ? ', ' + losses : ''}…`;
   else if (sim.done) {
     const tally = new Map();
     for (const i of simCells()) tally.set(i, (tally.get(i) || 0) + 1);
-    const where = [...tally].map(([i, k]) => cellName(i) + (k > 1 ? ' ×' + k : ''));
-    msg = `Settled after ${sim.steps} steps on <b>${where.join(', ')}</b>.`;
-  } else msg = `${k} magnet${k > 1 ? 's' : ''} dropped on random squares${pinned ? `, plus ${pinned} pinned on the 0${pinned > 1 ? 's' : ''}` : ''}. Press Start.`;
+    const where = [...tally].map(([i, c]) => cellName(i) + (c > 1 ? ' ×' + c : ''));
+    msg = `Settled after ${sim.steps} steps. ` + (k ? `${plural(k, 'magnet')} on <b>${where.join(', ')}</b>` : 'No magnets left') + (losses ? `; ${losses}` : '') + '.';
+  } else msg = `${plural(k, 'magnet')} dropped on random squares${zeros ? `, plus ${zeros} pinned on the 0${zeros > 1 ? 's' : ''}` : ''}. Press Start.`;
   if (sim.runs) {
     const top = sim.heat.map((c, i) => [c, i]).filter(x => x[0]).sort((a, b) => b[0] - a[0]).slice(0, 6);
-    msg += `<br>Heatmap over ${sim.runs} run${sim.runs > 1 ? 's' : ''}. Most landings: ` +
-      top.map(([c, i]) => `<b>${cellName(i)}</b> ${Math.round(100 * c / sim.runs)}%`).join(', ') + '.';
+    const avg = x => (x / sim.runs).toFixed(1).replace(/\.0$/, '');
+    msg += `<br>Heatmap over ${plural(sim.runs, 'run')}. ` +
+      (top.length ? 'Most landings: ' + top.map(([c, i]) => `<b>${cellName(i)}</b> ${Math.round(100 * c / sim.runs)}%`).join(', ') + '. ' : 'Nothing has landed yet. ') +
+      `Per run, ${avg(sim.tot.land)} stayed, ${avg(sim.tot.pop)} popped` + (zeros ? `, ${avg(sim.tot.join)} joined a 0.` : '.');
   }
   if ($('truthToggle').checked && board.owner) {
     const t = simTruth().length;
-    msg += `<br>The answer has ${t} capitol${t > 1 ? 's' : ''} (dashed rings).`;
+    msg += `<br>The answer has ${plural(t, 'capitol')} (dashed rings).`;
   }
   $('simStatus').innerHTML = msg;
 }
@@ -753,6 +862,7 @@ function drawSim() {
   if (!board || !sim.w) return;
   const n = board.n, cell = sim.w / n, ctx = simCtx, dpr = simCanvas.width / sim.w;
   const css = getComputedStyle(document.documentElement), tok = k => css.getPropertyValue(k).trim();
+  const ring = (x, y, rad) => { ctx.beginPath(); ctx.arc(x * cell, y * cell, rad, 0, 2 * Math.PI); ctx.stroke(); };
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, sim.w, sim.w);
   if ($('heatToggle').checked && sim.runs) {
@@ -767,16 +877,44 @@ function drawSim() {
   }
   if ($('truthToggle').checked) {
     ctx.strokeStyle = tok('--good'); ctx.lineWidth = Math.max(2, cell * 0.05); ctx.setLineDash([cell * 0.1, cell * 0.07]);
-    for (const i of simTruth()) { ctx.beginPath(); ctx.arc((i % n + 0.5) * cell, (((i / n) | 0) + 0.5) * cell, cell * 0.4, 0, 2 * Math.PI); ctx.stroke(); }
+    for (const i of simTruth()) { const c = cellCenter(i); ring(c.x, c.y, cell * 0.4); }
     ctx.setLineDash([]);
   }
   const r = Math.max(4, cell * 0.14);
+  // a faint × wherever a magnet popped this run
+  const xr = Math.max(3, cell * 0.09);
+  ctx.strokeStyle = tok('--bad'); ctx.lineWidth = 2; ctx.globalAlpha = 0.75;
+  for (const m of sim.marks) {
+    if (m.kind !== 'pop') continue;
+    const x = m.x * cell, y = m.y * cell;
+    ctx.beginPath(); ctx.moveTo(x - xr, y - xr); ctx.lineTo(x + xr, y + xr); ctx.moveTo(x + xr, y - xr); ctx.lineTo(x - xr, y + xr); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
   const dot = (x, y, fill) => {
     ctx.beginPath(); ctx.arc(x * cell, y * cell, r, 0, 2 * Math.PI);
     ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = tok('--sheet'); ctx.stroke();
   };
   for (const p of sim.pinned) dot(p.x, p.y, tok('--ink'));
   for (const p of sim.pts) dot(p.x, p.y, tok('--magnet'));
+  // pressure gauge: the red arc fills up as a magnet nears its pop limit
+  const o = simOpts();
+  if (o.popAt < POP_NEVER) {
+    ctx.strokeStyle = tok('--bad'); ctx.lineWidth = 2.5;
+    for (const p of sim.pts) {
+      const f = Math.min(1, p.press / popLimit(o));
+      if (f < 0.05) continue;
+      ctx.beginPath(); ctx.arc(p.x * cell, p.y * cell, r + 3, -Math.PI / 2, -Math.PI / 2 + f * 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // a burst where a magnet popped, a closing ring where one merged into a 0
+  ctx.lineWidth = 2;
+  for (const f of sim.fx) {
+    const k = f.t / FX_FRAMES;
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = tok(f.kind === 'pop' ? '--bad' : '--ink');
+    ring(f.x, f.y, f.kind === 'pop' ? r * (1 + 1.6 * k) : r * (1.6 - k));
+  }
+  ctx.globalAlpha = 1;
 }
 
 $('capMinus').addEventListener('click', () => setCount(simCount() - 1));
@@ -786,16 +924,17 @@ $('shuffleBtn').addEventListener('click', simScatter);
 $('runBtn').addEventListener('click', simStart);
 $('batchBtn').addEventListener('click', () => {
   if (sim.batchLeft) { sim.batchLeft = 0; sim.running = false; simUi(); return; }
-  sim.batchLeft = SIM_BATCH; sim.running = true; requestAnimationFrame(simFrame); simUi();
+  sim.batchLeft = SIM_BATCH; sim.running = true; kick(); simUi();
 });
-$('heatClearBtn').addEventListener('click', () => { sim.heat.fill(0); sim.runs = 0; drawSim(); simUi(); });
-for (const id of ['spacing', 'jiggle']) $(id).addEventListener('input', e => { store.set('mt2mag:' + id, +e.target.value); simUi(); });
+$('heatClearBtn').addEventListener('click', () => { sim.heat.fill(0); sim.runs = 0; sim.tot = { land: 0, pop: 0, join: 0 }; drawSim(); simUi(); });
+const SIM_SLIDERS = ['spacing', 'pull', 'popAt', 'jiggle'];
+for (const id of SIM_SLIDERS) $(id).addEventListener('input', e => { store.set('mt2mag:' + id, +e.target.value); simUi(); drawSim(); });
 for (const id of ['heatToggle', 'truthToggle']) $(id).addEventListener('change', () => { drawSim(); simUi(); });
 new ResizeObserver(sizeSim).observe($('board'));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawSim);
-for (const id of ['count', 'spacing', 'jiggle']) { const v = store.get('mt2mag:' + id); if (v != null) $(id === 'count' ? 'capCount' : id).value = v; }
+for (const id of ['count', ...SIM_SLIDERS]) { const v = store.get('mt2mag:' + id); if (v != null) $(id === 'count' ? 'capCount' : id).value = v; }
 
-showSizes =!!store.get('mt2mag:sizes'); $('sizesToggle').checked = showSizes;
+showSizes = !!store.get('mt2mag:sizes'); $('sizesToggle').checked = showSizes;
 setTool({ type: 'color', color: 0 });
 loadBoard(boards.find(x => x.id === store.get('mt2mag:last')) || boards[0]);
 </script>
