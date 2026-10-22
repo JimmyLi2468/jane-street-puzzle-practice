@@ -236,7 +236,7 @@ details.rules ul { padding-left: 1.2em; margin: 0.4em 0; }
       </div>
       <div class="panel sim">
         <h2>Magnets</h2>
-        <p class="hint">Every clue likes its capitol about √clue steps away (9 → 3, 4 → 2, 1 → right beside it). Closer than that, it pushes magnets away, harder for bigger numbers. Farther out, it pulls its nearest magnet back in, more gently for bigger numbers. No magnet can stop on a clue. A 0 is already a capitol and pulls nearby magnets in until they merge with it. A magnet squeezed much harder than a typical square on this board pops off, and its red ring shows how close it is. State borders are hidden walls we don't know yet, so forces pass straight through them. Start with extra magnets and let the crowded ones pop.</p>
+        <p class="hint">Every clue likes its capitol √clue steps away, rounded (1–2 → right beside it, 3–6 → 2 steps, 7–12 → 3). Closer than that, it pushes magnets away, harder for bigger numbers, and it pulls its nearest magnet onto a square at that distance, more gently for bigger numbers. No magnet can stop on a clue. A 0 is already a capitol and pulls nearby magnets in until they merge with it. A magnet squeezed much harder than a typical square on this board pops off, and its red ring shows how close it is. A green ring means a clue up to 9 has no other capitol within (clue + 1) ÷ 2 steps, rounded down. The rules guarantee one there, so that magnet stays whatever the pressure. State borders are hidden walls we don't know yet, so forces pass straight through them. Start with extra magnets and let the crowded ones pop.</p>
         <div class="simrow">
           <label for="capCount">Capitols</label>
           <div class="stepper">
@@ -589,16 +589,17 @@ $('randBtn').addEventListener('click', () => { const inG = boards.filter(x => x.
 
 // ---------- magnet simulation ----------
 // Free capitols are magnets on the board, moving as if through thick syrup (no momentum).
-//  - Every clue v has a comfort distance of about √v steps (9 → 3, 4 → 2, 1 → next door), roughly
+//  - Every clue v has a comfort distance of round(√v) steps (1–2 → 1, 3–6 → 2, 7–12 → 3), roughly
 //    where its capitol would sit if the states along the way were about as wide as that distance.
 //    Closer than that, it pushes every magnet away, harder for bigger clues and fading to nothing
-//    at the comfort distance. Farther out, it pulls its nearest magnet back toward that distance,
-//    more gently for bigger clues, unless a 0 is already its nearest capitol.
-//  - A 1 pulls its magnet onto an open square right beside it, not a diagonal one.
+//    at the comfort distance. It also pulls its nearest magnet toward the closest open square
+//    exactly that many steps out, more gently for bigger clues, unless a 0 is already its nearest capitol.
 //  - A 0 is already a capitol. It pulls nearby magnets in, and one that reaches its square merges into it.
 //  - No magnet may stop on any non-zero clue: only a 0 square can hold a capitol.
 //  - A magnet squeezed past the pop limit (forces it can't escape, from clues, walls and other
-//    magnets) pops off the board.
+//    magnets) pops off the board, unless it's the only capitol within ⌊(v + 1) / 2⌋ steps of some
+//    clue v up to 9: the rules guarantee a capitol there, so that one stays whatever the pressure.
+//    Bigger clues don't protect, since their guaranteed reach is so wide it keeps magnets in the wrong places.
 // State borders are hidden walls we don't know yet, so forces pass straight through them; the
 // start-up jiggle stands in for that uncertainty. Positions are in cells, square centers at i + 0.5.
 const SIM_SOFT = 0.25;      // softening (cells²) so a magnet right beside a clue doesn't blow up
@@ -609,6 +610,7 @@ const SIM_MAX_STEPS = 1500;
 const SIM_BATCH = 25;
 const PULL_REACH = 2.5;     // pulls reach this many cells past a clue's comfort distance, fading out over the next half cell
 const POP_NEVER = 41;       // the pop slider counts tenths of this board's typical pressure; its top turns popping off
+const PROTECT_MAX = 9;      // only clues up to this can save a magnet from popping
 const FX_FRAMES = 24;
 const sim = {
   clues: [], pinned: [], blocked: [], zero: [], pts: [], marks: [], fx: [], popped: 0, joined: 0,
@@ -618,6 +620,7 @@ const simCanvas = $('simCanvas'), simCtx = simCanvas.getContext('2d');
 const cellName = i => 'R' + (((i / board.n) | 0) + 1) + 'C' + (i % board.n + 1);
 const cellOf = p => ((p.y | 0) * board.n) + (p.x | 0);
 const cellCenter = i => ({ x: i % board.n + 0.5, y: ((i / board.n) | 0) + 0.5 });
+const stepsBetween = (i, j) => Math.abs(((i / board.n) | 0) - ((j / board.n) | 0)) + Math.abs(i % board.n - j % board.n);
 const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
 let simRaf = 0;
 
@@ -642,12 +645,14 @@ function simReset() {
   sim.clues = []; sim.pinned = []; sim.blocked = new Array(n * n).fill(false); sim.zero = new Array(n * n).fill(false);
   board.clue.forEach((v, i) => {
     if (v < 0) return;
-    if (v === 0) { sim.pinned.push(cellCenter(i)); sim.zero[i] = true; return; }
+    if (v === 0) { sim.pinned.push(Object.assign(cellCenter(i), { i })); sim.zero[i] = true; return; }
     sim.blocked[i] = true;
-    sim.clues.push(Object.assign(cellCenter(i), { v, r0: Math.sqrt(v), i }));
+    // every step but the last costs at least 2 (a cost-1 step touches a single-square state, which is a
+    // capitol itself), so some capitol is always within ⌊(v + 1) / 2⌋ steps: that's the `must` distance
+    sim.clues.push(Object.assign(cellCenter(i), { v, r0: Math.round(Math.sqrt(v)), must: Math.floor((v + 1) / 2), give: 1 / Math.sqrt(v), i }));
   });
-  // a 1's capitol sits on one of its open neighbours
-  for (const c of sim.clues) if (c.v === 1) c.spots = nbrs(c.i, n).filter(j => !sim.blocked[j]).map(cellCenter);
+  // the open squares exactly a clue's comfort distance away, where it pulls its magnet
+  for (const c of sim.clues) c.spots = [...Array(n * n).keys()].filter(j => !sim.blocked[j] && stepsBetween(j, c.i) === c.r0).map(cellCenter);
   sim.base = typicalPressure();
   $('capCount').max = simMax();
   $('capCount').value = simCount();
@@ -725,14 +730,11 @@ function forceOn(p, o, pts, me, near) {
       const f = c.v * (1 / (d * d + SIM_SOFT) - 1 / (c.r0 * c.r0 + SIM_SOFT));
       add(f * dx / d, f * dy / d);
     }
-    // outside it: pull this clue's nearest magnet back in, more gently for bigger clues
+    // pull this clue's nearest magnet onto the closest square at the comfort distance, more gently for bigger clues
     if (o.pull > 0 && near[k] === me) {
-      const strength = o.pull / c.r0, reach = c.r0 + PULL_REACH;
-      if (c.spots) {
-        let best = null, bd = Infinity;
-        for (const s of c.spots) { const e = Math.hypot(s.x - p.x, s.y - p.y); if (e < bd) { bd = e; best = s; } }
-        if (best) tug(c.x, c.y, reach, best.x, best.y, strength);
-      } else if (d > c.r0) tug(c.x, c.y, reach, c.x + dx * c.r0 / d, c.y + dy * c.r0 / d, strength);
+      let best = null, bd = Infinity;
+      for (const s of c.spots) { const e = Math.hypot(s.x - p.x, s.y - p.y); if (e < bd) { bd = e; best = s; } }
+      if (best) tug(c.x, c.y, c.r0 + PULL_REACH, best.x, best.y, o.pull * c.give);
     }
   });
   if (o.spacing > 0) {
@@ -764,6 +766,15 @@ function typicalPressure() {
 }
 const popLimit = o => o.popAt / 10 * sim.base;
 
+// is p the only capitol (among the magnets still on the board and the 0s) within the must distance of a clue up to 9?
+function soleCapitol(p, alive) {
+  const at = cellOf(p);
+  const covers = (j, c) => stepsBetween(j, c.i) <= c.must;
+  return sim.clues.some(c => c.v <= PROTECT_MAX && covers(at, c) &&
+    !sim.pinned.some(z => covers(z.i, c)) &&
+    !alive.some(q => q !== p && covers(cellOf(q), c)));
+}
+
 // one step: each magnet slides along its net force, the board edge and clue squares stop it,
 // and anything squeezed too hard or close enough to a 0 leaves the board
 function simStep(o) {
@@ -787,10 +798,18 @@ function simStep(o) {
     p.press = 0.85 * p.press + 0.15 * pressure(forces[a], rx, ry);
     moved = Math.max(moved, Math.hypot(nx - p.x, ny - p.y));
     p.x = nx; p.y = ny;
-    if (o.popAt < POP_NEVER && p.press > popLimit(o)) simGone(p, 'pop');
-    else if (sim.zero[cellOf(p)]) simGone(p, 'join');
+    p.safe = false;
+    if (sim.zero[cellOf(p)]) simGone(p, 'join');
     else keep.push(p);
   });
+  // pop the most squeezed first, sparing any magnet that's the last capitol within a clue's reach
+  if (o.popAt < POP_NEVER) {
+    const limit = popLimit(o);
+    for (const p of keep.filter(q => q.press > limit).sort((a, b) => b.press - a.press)) {
+      p.safe = soleCapitol(p, keep);
+      if (!p.safe) { simGone(p, 'pop'); keep.splice(keep.indexOf(p), 1); }
+    }
+  }
   if (keep.length < pts.length) { sim.pts = keep; moved = 1; }
   sim.steps++;
   sim.calm = temp === 0 && moved < 0.002 ? sim.calm + 1 : 0;
@@ -920,13 +939,14 @@ function drawSim() {
   };
   for (const p of sim.pinned) dot(p.x, p.y, tok('--ink'));
   for (const p of sim.pts) dot(p.x, p.y, tok('--magnet'));
-  // pressure gauge: the red arc fills up as a magnet nears its pop limit
+  // pressure gauge: the red arc fills up as a magnet nears its pop limit; a green ring means a clue is holding it in place
   const o = simOpts();
   if (o.popAt < POP_NEVER) {
-    ctx.strokeStyle = tok('--bad'); ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.5;
     for (const p of sim.pts) {
-      const f = Math.min(1, p.press / popLimit(o));
+      const f = p.safe ? 1 : Math.min(1, p.press / popLimit(o));
       if (f < 0.05) continue;
+      ctx.strokeStyle = tok(p.safe ? '--good' : '--bad');
       ctx.beginPath(); ctx.arc(p.x * cell, p.y * cell, r + 3, -Math.PI / 2, -Math.PI / 2 + f * 2 * Math.PI); ctx.stroke();
     }
   }
