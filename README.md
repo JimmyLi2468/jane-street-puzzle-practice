@@ -10,7 +10,7 @@ Works on iPhone, iPad, Android and desktop browsers. Each page is one self-conta
 
 | Month | Puzzle | What you get |
 | --- | --- | --- |
-| October 2026 | [It's a Metric, Too](https://jimmyli2468.github.io/jane-street-puzzle-practice/its-a-metric-too/) | 48 practice boards (4×4 to 7×7), each with exactly one solution, plus the original 11×11 with a rule checker. [Capitol magnets](https://jimmyli2468.github.io/jane-street-puzzle-practice/its-a-metric-too/magnets.html) treats clues as magnets that push capitols away and maps where they come to rest. |
+| October 2026 | [It's a Metric, Too](https://jimmyli2468.github.io/jane-street-puzzle-practice/its-a-metric-too/) | 48 practice boards (4×4 to 7×7), each with exactly one solution, plus the original 11×11 with a rule checker. [Capitol magnets](https://jimmyli2468.github.io/jane-street-puzzle-practice/its-a-metric-too/magnets.html) treats clues as magnets that push capitols away up close and pull them back from afar, pops the ones squeezed too hard, and maps where the rest come to rest. |
 
 ## Why a website instead of the HTML file
 

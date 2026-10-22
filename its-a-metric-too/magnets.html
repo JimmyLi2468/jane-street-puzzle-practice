@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Capitol Magnets · It's a Metric, Too</title>
-<meta name="description" content="A magnet simulation for Jane Street's “It's a Metric, Too” puzzle: clues push capitols away to show where they could lie.">
+<meta name="description" content="A magnet simulation for Jane Street's “It's a Metric, Too” puzzle: clues push capitols away up close and pull them back from afar, to show where they could lie.">
 <meta name="theme-color" content="#e9eeec" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111a1e" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e6b70'/%3E%3Cpath d='M6 6h9v9H6zM17 6h9v9h-9zM6 17h9v9H6z' fill='%23fff' opacity='.85'/%3E%3Ccircle cx='21.5' cy='21.5' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
@@ -195,7 +195,7 @@ details.rules ul { padding-left: 1.2em; margin: 0.4em 0; }
       <a class="back" href="./">← Back to the game</a>
       <h1>Capitol Magnets</h1>
     </div>
-    <p class="sub">Treat the board as a magnet table for Jane Street's <a href="https://www.janestreet.com/puzzles/current-puzzle/" target="_blank" rel="noopener">October 2026 puzzle</a>. Clues push capitols away, and where they come to rest hints at where the real ones could be.</p>
+    <p class="sub">Treat the board as a magnet table for Jane Street's <a href="https://www.janestreet.com/puzzles/current-puzzle/" target="_blank" rel="noopener">October 2026 puzzle</a>. Each clue pushes capitols away up close and pulls them back from afar, and where they come to rest hints at where the real ones could be.</p>
   </header>
 
   <div class="picker">
@@ -236,7 +236,7 @@ details.rules ul { padding-left: 1.2em; margin: 0.4em 0; }
       </div>
       <div class="panel sim">
         <h2>Magnets</h2>
-        <p class="hint">Clues of 2 and up push capitols away, harder for bigger numbers (clue ÷ distance²). A 1 can't hold a capitol, but it gently pulls one onto a square beside it. A 0 is already a capitol and pulls nearby magnets in until they merge with it. A magnet squeezed much harder than a typical square on this board pops off, and its red ring shows how close it is. State borders are hidden walls we don't know yet, so forces pass straight through them. Start with extra magnets and let the crowded ones pop.</p>
+        <p class="hint">Every clue likes its capitol about √clue steps away (9 → 3, 4 → 2, 1 → right beside it). Closer than that, it pushes magnets away, harder for bigger numbers. Farther out, it pulls its nearest magnet back in, more gently for bigger numbers. No magnet can stop on a clue. A 0 is already a capitol and pulls nearby magnets in until they merge with it. A magnet squeezed much harder than a typical square on this board pops off, and its red ring shows how close it is. State borders are hidden walls we don't know yet, so forces pass straight through them. Start with extra magnets and let the crowded ones pop.</p>
         <div class="simrow">
           <label for="capCount">Capitols</label>
           <div class="stepper">
@@ -247,7 +247,7 @@ details.rules ul { padding-left: 1.2em; margin: 0.4em 0; }
           <span class="hint" id="capMax"></span>
         </div>
         <label class="slider">Capitols repel each other <output id="spacingOut"></output><input type="range" id="spacing" min="0" max="10" step="0.5" value="2"></label>
-        <label class="slider">Pull from 0s and 1s <output id="pullOut"></output><input type="range" id="pull" min="0" max="10" step="0.5" value="3"></label>
+        <label class="slider">Pull back from afar <output id="pullOut"></output><input type="range" id="pull" min="0" max="10" step="0.5" value="3"></label>
         <label class="slider">Pop when squeezed past <output id="popAtOut"></output><input type="range" id="popAt" min="10" max="41" step="1" value="20"></label>
         <label class="slider">Jiggle at the start <output id="jiggleOut"></output><input type="range" id="jiggle" min="0" max="3" step="0.25" value="1"></label>
         <div class="row">
@@ -589,12 +589,15 @@ $('randBtn').addEventListener('click', () => { const inG = boards.filter(x => x.
 
 // ---------- magnet simulation ----------
 // Free capitols are magnets on the board, moving as if through thick syrup (no momentum).
-//  - Clues of 2 and up push them away with force clue / distance², so big numbers shove hard.
-//  - A 1 has its capitol one step away: no magnet may stop on it, and it gently pulls nearby
-//    magnets onto an open square beside it. Strong pushes can still drag them off.
+//  - Every clue v has a comfort distance of about √v steps (9 → 3, 4 → 2, 1 → next door), roughly
+//    where its capitol would sit if the states along the way were about as wide as that distance.
+//    Closer than that, it pushes every magnet away, harder for bigger clues and fading to nothing
+//    at the comfort distance. Farther out, it pulls its nearest magnet back toward that distance,
+//    more gently for bigger clues, unless a 0 is already its nearest capitol.
+//  - A 1 pulls its magnet onto an open square right beside it, not a diagonal one.
 //  - A 0 is already a capitol. It pulls nearby magnets in, and one that reaches its square merges into it.
 //  - No magnet may stop on any non-zero clue: only a 0 square can hold a capitol.
-//  - A magnet squeezed past the pop limit (pushes it can't escape, from clues, walls and other
+//  - A magnet squeezed past the pop limit (forces it can't escape, from clues, walls and other
 //    magnets) pops off the board.
 // State borders are hidden walls we don't know yet, so forces pass straight through them; the
 // start-up jiggle stands in for that uncertainty. Positions are in cells, square centers at i + 0.5.
@@ -604,11 +607,11 @@ const SIM_MAX_STEP = 0.12;  // fastest a magnet can move in one step, in cells
 const SIM_ANNEAL = 240;     // steps over which the jiggle fades to nothing
 const SIM_MAX_STEPS = 1500;
 const SIM_BATCH = 25;
-const PULL_REACH = 2.5;     // 0s and 1s pull magnets within this many cells, fading out over the next half cell
+const PULL_REACH = 2.5;     // pulls reach this many cells past a clue's comfort distance, fading out over the next half cell
 const POP_NEVER = 41;       // the pop slider counts tenths of this board's typical pressure; its top turns popping off
 const FX_FRAMES = 24;
 const sim = {
-  clues: [], ones: [], pinned: [], blocked: [], zero: [], pts: [], marks: [], fx: [], popped: 0, joined: 0,
+  clues: [], pinned: [], blocked: [], zero: [], pts: [], marks: [], fx: [], popped: 0, joined: 0,
   steps: 0, calm: 0, running: false, done: false, heat: [], runs: 0, tot: null, batchLeft: 0, w: 0, base: 1,
 };
 const simCanvas = $('simCanvas'), simCtx = simCanvas.getContext('2d');
@@ -636,16 +639,15 @@ function simReset() {
   const n = board.n;
   sim.running = false; sim.batchLeft = 0; sim.fx = [];
   sim.heat = new Array(n * n).fill(0); sim.runs = 0; sim.tot = { land: 0, pop: 0, join: 0 };
-  sim.clues = []; sim.ones = []; sim.pinned = []; sim.blocked = new Array(n * n).fill(false); sim.zero = new Array(n * n).fill(false);
+  sim.clues = []; sim.pinned = []; sim.blocked = new Array(n * n).fill(false); sim.zero = new Array(n * n).fill(false);
   board.clue.forEach((v, i) => {
     if (v < 0) return;
     if (v === 0) { sim.pinned.push(cellCenter(i)); sim.zero[i] = true; return; }
     sim.blocked[i] = true;
-    if (v === 1) sim.ones.push(Object.assign(cellCenter(i), { i }));
-    else sim.clues.push(Object.assign(cellCenter(i), { v }));
+    sim.clues.push(Object.assign(cellCenter(i), { v, r0: Math.sqrt(v), i }));
   });
   // a 1's capitol sits on one of its open neighbours
-  for (const o of sim.ones) o.spots = nbrs(o.i, n).filter(j => !sim.blocked[j]).map(cellCenter);
+  for (const c of sim.clues) if (c.v === 1) c.spots = nbrs(c.i, n).filter(j => !sim.blocked[j]).map(cellCenter);
   sim.base = typicalPressure();
   $('capCount').max = simMax();
   $('capCount').value = simCount();
@@ -694,32 +696,53 @@ function simGone(p, kind) {
   if (!sim.batchLeft) sim.fx.push({ x: p.x, y: p.y, kind, t: 0 });
 }
 
-// net force on a magnet at p, plus the summed size of every force acting on it
-function forceOn(p, o, pts) {
+// for each clue, the index of the magnet it pulls: its nearest capitol, unless that's a 0 (then -1)
+function nearestMagnets(pts) {
+  return sim.clues.map(c => {
+    let best = -1, bd = Infinity;
+    for (const z of sim.pinned) bd = Math.min(bd, Math.hypot(z.x - c.x, z.y - c.y));
+    pts.forEach((p, a) => { const d = Math.hypot(p.x - c.x, p.y - c.y); if (d < bd) { bd = d; best = a; } });
+    return best;
+  });
+}
+
+// net force on magnet number `me` at p, plus the summed size of every force acting on it
+function forceOn(p, o, pts, me, near) {
   let gx = 0, gy = 0, sum = 0;
   const add = (fx, fy) => { gx += fx; gy += fy; sum += Math.hypot(fx, fy); };
-  const push = (x, y, q) => {
-    const dx = p.x - x, dy = p.y - y, r2 = dx * dx + dy * dy + SIM_SOFT, f = q / (r2 * Math.sqrt(r2));
-    add(f * dx, f * dy);
-  };
-  // spring toward (tx, ty) that tops out at the pull strength, felt only near the clue at (cx, cy)
-  const tug = (cx, cy, tx, ty) => {
-    const fade = Math.min(1, Math.max(0, (PULL_REACH + 0.5 - Math.hypot(p.x - cx, p.y - cy)) / 0.5));
+  // spring toward (tx, ty) that tops out at `strength`, felt only within `reach` of the clue at (cx, cy)
+  const tug = (cx, cy, reach, tx, ty, strength) => {
+    const fade = Math.min(1, Math.max(0, (reach + 0.5 - Math.hypot(p.x - cx, p.y - cy)) / 0.5));
     const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy);
     if (!fade || d < 1e-9) return;
-    const f = o.pull * fade * Math.min(1, d) / d;
+    const f = strength * fade * Math.min(1, d) / d;
     add(f * dx, f * dy);
   };
-  for (const c of sim.clues) push(c.x, c.y, c.v);
-  if (o.spacing > 0) for (const q of pts) if (q !== p) push(q.x, q.y, o.spacing);
-  if (o.pull > 0) {
-    for (const z of sim.pinned) tug(z.x, z.y, z.x, z.y);
-    for (const one of sim.ones) {
-      let best = null, bd = Infinity;
-      for (const s of one.spots) { const d = Math.hypot(s.x - p.x, s.y - p.y); if (d < bd) { bd = d; best = s; } }
-      if (best) tug(one.x, one.y, best.x, best.y);
+  sim.clues.forEach((c, k) => {
+    const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy);
+    // inside the comfort distance: push, fading to zero right at it
+    if (d < c.r0 && d > 1e-9) {
+      const f = c.v * (1 / (d * d + SIM_SOFT) - 1 / (c.r0 * c.r0 + SIM_SOFT));
+      add(f * dx / d, f * dy / d);
+    }
+    // outside it: pull this clue's nearest magnet back in, more gently for bigger clues
+    if (o.pull > 0 && near[k] === me) {
+      const strength = o.pull / c.r0, reach = c.r0 + PULL_REACH;
+      if (c.spots) {
+        let best = null, bd = Infinity;
+        for (const s of c.spots) { const e = Math.hypot(s.x - p.x, s.y - p.y); if (e < bd) { bd = e; best = s; } }
+        if (best) tug(c.x, c.y, reach, best.x, best.y, strength);
+      } else if (d > c.r0) tug(c.x, c.y, reach, c.x + dx * c.r0 / d, c.y + dy * c.r0 / d, strength);
+    }
+  });
+  if (o.spacing > 0) {
+    for (const q of pts) {
+      if (q === p) continue;
+      const dx = p.x - q.x, dy = p.y - q.y, r2 = dx * dx + dy * dy + SIM_SOFT, f = o.spacing / (r2 * Math.sqrt(r2));
+      add(f * dx, f * dy);
     }
   }
+  if (o.pull > 0) for (const z of sim.pinned) tug(z.x, z.y, PULL_REACH, z.x, z.y, o.pull);
   return { gx, gy, sum };
 }
 // pressure: the part of the forces that cancels out (against each other or a reaction) instead of moving the magnet
@@ -731,7 +754,7 @@ function typicalPressure() {
   const n = board.n, lo = 0.5, hi = n - 0.5, all = [];
   for (let i = 0; i < n * n; i++) {
     if (sim.blocked[i]) continue;
-    const p = cellCenter(i), f = forceOn(p, { spacing: 0, pull: 0 }, []);
+    const p = cellCenter(i), f = forceOn(p, { spacing: 0, pull: 0 }, [], -1, []);
     const rx = (p.x <= lo && f.gx < 0) || (p.x >= hi && f.gx > 0) ? -f.gx : 0;
     const ry = (p.y <= lo && f.gy < 0) || (p.y >= hi && f.gy > 0) ? -f.gy : 0;
     all.push(pressure(f, rx, ry));
@@ -746,7 +769,8 @@ const popLimit = o => o.popAt / 10 * sim.base;
 function simStep(o) {
   const pts = sim.pts, lo = 0.5, hi = board.n - 0.5;
   const temp = o.jiggle * Math.max(0, 1 - sim.steps / SIM_ANNEAL);
-  const forces = pts.map(p => forceOn(p, o, pts));
+  const near = nearestMagnets(pts);
+  const forces = pts.map((p, a) => forceOn(p, o, pts, a, near));
   let moved = 0;
   const keep = [];
   pts.forEach((p, a) => {
