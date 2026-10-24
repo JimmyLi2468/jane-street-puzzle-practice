@@ -140,6 +140,11 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
       <button class="btn" id="undoBtn" disabled>Undo</button>
       <button class="btn" id="presetCorner">Corner hypothesis</button>
       <button class="btn" id="presetClear">Clear</button>
+      <span class="sep"></span>
+      <button class="btn" id="saveJson">Save JSON</button>
+      <button class="btn" id="openJson">Open JSON</button>
+      <button class="btn" id="savePng">Save PNG</button>
+      <input type="file" id="fileIn" accept="application/json,.json" hidden>
     </div>
   </header>
 
@@ -253,7 +258,7 @@ function regionInfo(cells, n) {
   const member = new Set(cells);
   for (const i of cells) { const r = (i / n) | 0, c = i % n; minC = Math.min(minC, c); maxC = Math.max(maxC, c); minR = Math.min(minR, r); maxR = Math.max(maxR, r); }
   const p = minC + maxC, q = minR + maxR;
-  let anySym = false, capOk = true, cap = -1; const fixes = [];
+  let anySym = false, capOk = true, cap = -1; const fixes = [], symNames = [];
   for (let g = 0; g < 7; g++) {
     if (g >= 3 && ((p + q) & 1)) continue;
     let ok = true, fixed = 0, fixedCell = -1;
@@ -273,11 +278,12 @@ function regionInfo(cells, n) {
     }
     if (!ok) continue;
     anySym = true; fixes.push(fixed);
+    symNames.push(['rot180','refV','refH','refD1','refD2','rot90','rot270'][g]);
     if (fixed !== 1) capOk = false;
     else if (cap === -1) cap = fixedCell;
     else if (cap !== fixedCell) capOk = false;
   }
-  return { sym: anySym, capitol: anySym && capOk ? cap : -1, fixes };
+  return { sym: anySym, capitol: anySym && capOk ? cap : -1, fixes, symNames };
 }
 function components(labels, n) {
   const N2 = n * n, comp = new Array(N2).fill(-1), list = [];
@@ -429,6 +435,7 @@ function paint(i) {
   }
   if (selected === i) d.classList.add('sel'); else d.classList.remove('sel');
 }
+function setStatus(html, kind) { const st = $('status'); st.innerHTML = html; st.className = 'status' + (kind ? ' ' + kind : ''); }
 function pushUndo() { undoStack.push({ c: colors.slice(), a: [...assumed] }); if (undoStack.length > 200) undoStack.shift(); }
 function doUndo() { const u = undoStack.pop(); if (!u) return; colors = u.c; assumed = new Map(u.a); refresh(); }
 function setCell(i) {
@@ -510,6 +517,124 @@ function loadPreset(p) {
   refresh();
 }
 
+/* ---------- save and load ---------- */
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+function boardJSON() {
+  const led = lastLedger;
+  return {
+    format: 'metric-too-ledger/1',
+    n: N,
+    saved: new Date().toISOString(),
+    published: "Jane Street, It's a Metric, Too (October 2026) -- the 33 official numbers",
+    states: led.list.map((s, id) => ({
+      id,
+      size: s.cells.length,
+      cells: s.cells.map(i => [Math.floor(i / N), i % N]),
+      symmetry: regionInfo(s.cells, N).symNames,
+      capitol: s.capitol >= 0 ? [Math.floor(s.capitol / N), s.capitol % N] : null,
+    })),
+    assumed_capitols: [...assumed].map(([i, k]) => ({
+      cell: [Math.floor(i / N), i % N], state_size: k,
+    })),
+  };
+}
+function loadJSON(data) {
+  // accepts the exported shape and the plain preset shape
+  const cellsOf = st => (Array.isArray(st) && Array.isArray(st[0]) && typeof st[0][0] === 'number')
+    ? st : (st.cells || []);
+  colors = new Array(N * N).fill(-1);
+  (data.states || []).forEach((st, id) => cellsOf(st).forEach(([r, c]) => { colors[r * N + c] = id; }));
+  assumed = new Map();
+  (data.assumed_capitols || data.assumed || []).forEach(a => {
+    if (Array.isArray(a)) { const [r, c, k] = a; assumed.set(r * N + c, k == null ? 1 : k); }
+    else { const [r, c] = a.cell; assumed.set(r * N + c, a.state_size || 1); }
+  });
+  refresh();
+}
+function boardPNG() {
+  const S = 46, pad = 18, head = 62, foot = 78, dpr = 2;
+  const W = pad * 2 + S * N, H = head + S * N + foot;
+  const cv = document.createElement('canvas');
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.scale(dpr, dpr);
+  const cs = getComputedStyle(document.documentElement);
+  const C = n => (cs.getPropertyValue(n) || '').trim() || '#ffffff';
+  const led = lastLedger;
+  g.fillStyle = C('--ground'); g.fillRect(0, 0, W, H);
+  g.fillStyle = C('--ink');
+  g.font = '700 18px system-ui, sans-serif';
+  g.fillText("It's a Metric, Too - assumption ledger", pad, 26);
+  g.font = '12px system-ui, sans-serif';
+  g.fillStyle = C('--muted');
+  g.fillText(new Date().toLocaleString() + '  |  ' + led.list.length + ' states, ' +
+    led.list.filter(s => s.capitol >= 0).length + ' with a capitol, ' + assumed.size + ' assumed capitols',
+    pad, 44);
+  const x0 = pad, y0 = head;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const i = r * N + c, x = x0 + c * S, y = y0 + r * S;
+    const st = led.list.find(s => s.cells.includes(i));
+    g.fillStyle = st ? C('--t' + (colors[i] % NCOL)) : C('--blank');
+    g.fillRect(x + 1, y + 1, S - 2, S - 2);
+    if (clueAt[i] >= 0) {
+      g.fillStyle = C('--ink');
+      g.font = '600 17px ui-monospace, monospace';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(String(clueAt[i]), x + S / 2, y + S / 2);
+    }
+    if (st) {
+      g.fillStyle = st.capitol < 0 ? C('--bad') : C('--muted');
+      g.font = '700 9px system-ui, sans-serif';
+      g.textAlign = 'left'; g.textBaseline = 'top';
+      g.fillText(String(st.cells.length) + (st.capitol < 0 ? '*' : ''), x + 3, y + 2);
+      if (st.capitol === i) {
+        g.fillStyle = C('--ink');
+        g.beginPath(); g.arc(x + S / 2, y + S / 2, 7, 0, 2 * Math.PI); g.fill();
+      }
+    }
+    if (assumed.has(i)) {
+      g.strokeStyle = C('--accent'); g.lineWidth = 2; g.setLineDash([4, 3]);
+      g.strokeRect(x + 3, y + 3, S - 6, S - 6); g.setLineDash([]);
+      g.fillStyle = C('--accent');
+      g.beginPath(); g.arc(x + S / 2, y + S / 2, 5, 0, 2 * Math.PI); g.fill();
+    }
+    const dv = led.nearKnown.dist[i];
+    if (dv !== Infinity && dv !== 0) {
+      g.fillStyle = C('--muted'); g.font = '9px system-ui, sans-serif';
+      g.textAlign = 'right'; g.textBaseline = 'bottom';
+      g.fillText(String(dv), x + S - 3, y + S - 2);
+    }
+  }
+  g.strokeStyle = C('--line'); g.lineWidth = 1;
+  for (let i = 0; i <= N; i++) {
+    g.beginPath(); g.moveTo(x0 + i * S, y0); g.lineTo(x0 + i * S, y0 + N * S); g.stroke();
+    g.beginPath(); g.moveTo(x0, y0 + i * S); g.lineTo(x0 + N * S, y0 + i * S); g.stroke();
+  }
+  g.strokeStyle = C('--ink'); g.lineWidth = 3;
+  g.strokeRect(x0, y0, N * S, N * S);
+  const tally = {};
+  for (const row of led.rows) tally[row.verdict] = (tally[row.verdict] || 0) + 1;
+  g.fillStyle = C('--muted'); g.font = '11px system-ui, sans-serif';
+  g.textAlign = 'left'; g.textBaseline = 'top';
+  g.fillText('top-left = the area of the state   (* = that state has no capitol)',
+    pad, y0 + N * S + 10);
+  g.fillText('bottom-right = the cheapest distance to a capitol we already know about',
+    pad, y0 + N * S + 28);
+  g.fillText(Object.entries(tally).map(([k, v]) => v + ' ' + k.replace(/_/g, ' ').toLowerCase()).join('   '),
+    pad, y0 + N * S + 46);
+  cv.toBlob(b => download(b, 'metric-too-ledger-' + stamp() + '.png'), 'image/png');
+}
+
 /* ---------- events ---------- */
 $('board').addEventListener('pointerdown', e => {
   const el = e.target.closest('.cell'); if (!el) return;
@@ -535,6 +660,27 @@ $('tools').addEventListener('click', e => {
 $('presetCorner').addEventListener('click', () => { pushUndo(); loadPreset(PRESET_CORNER); });
 $('presetClear').addEventListener('click', () => { pushUndo(); colors = new Array(N * N).fill(-1); assumed = new Map(); refresh(); });
 $('undoBtn').addEventListener('click', doUndo);
+$('saveJson').addEventListener('click', () => {
+  const data = boardJSON();
+  download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+    'metric-too-ledger-' + stamp() + '.json');
+  setStatus('Saved ' + data.states.length + ' states and ' + data.assumed_capitols.length +
+    ' assumed capitols as JSON. The same file can be opened here, or read by the rule tools.', 'good');
+});
+$('openJson').addEventListener('click', () => $('fileIn').click());
+$('fileIn').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    pushUndo();
+    loadJSON(JSON.parse(await f.text()));
+    setStatus('Loaded ' + f.name + '.', 'good');
+  } catch (err) {
+    setStatus('Could not read that file: ' + err.message, 'bad');
+  }
+  e.target.value = '';
+});
+$('savePng').addEventListener('click', () => boardPNG());
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); return; }
   if (e.key >= '0' && e.key <= '9') { paintColor = +e.key; tool = 'paint'; }
