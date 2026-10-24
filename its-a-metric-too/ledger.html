@@ -126,6 +126,9 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
 /* the export area: a download can be blocked, so the same content is always
    on the page as text (copyable) and as a picture (saveable by long-press) */
+.io { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line); }
+.io-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin-right: 2px; }
+.io .btn { font-size: 0.84rem; padding: 6px 11px; }
 .exports { display: grid; gap: 10px; }
 .exp { display: grid; gap: 5px; }
 .exp label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; }
@@ -159,13 +162,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
       The <a href="map.html">capitol map</a> shows where a capitol could be; this page shows what your assumptions cost you.</p>
     </div>
     <div class="tools">
-      <button class="btn" id="undoBtn" disabled>Undo</button>
       <button class="btn" id="presetCorner">Corner hypothesis</button>
-      <button class="btn" id="presetClear">Clear</button>
-      <span class="sep"></span>
-      <button class="btn" id="saveJson">Save JSON</button>
-      <button class="btn" id="openJson">Open JSON</button>
-      <button class="btn" id="savePng">Save PNG</button>
       <input type="file" id="fileIn" accept="application/json,.json" hidden>
     </div>
   </header>
@@ -183,18 +180,6 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         exactly what a number below that floor demands.
       </p>
 
-      <div class="exports">
-        <div class="exp">
-          <label for="jsonOut">JSON — copy this to share the board (no download needed)</label>
-          <textarea id="jsonOut" rows="6" spellcheck="false"></textarea>
-          <div class="tools"><button class="btn" id="copyJson">Copy JSON</button></div>
-        </div>
-        <div class="exp" id="pngRow" hidden>
-          <label>PNG preview — long-press it to save</label>
-          <img id="pngOut" alt="the painted board">
-        </div>
-      </div>
-
       <div class="tools" id="tools">
         <span class="chip" aria-pressed="true" data-tool="paint"><span class="swatch" style="background:var(--t0)"></span>Paint state</span>
         <span class="chip" aria-pressed="false" data-tool="cap">Assume capitol</span>
@@ -204,9 +189,25 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         <span class="sep"></span>
         <label class="hint" for="capSize">assumed capitol's state size</label>
         <input class="btn" id="capSize" type="number" min="1" max="121" value="1" style="width:5.2em">
+        <span class="sep"></span>
+        <button class="btn" id="presetClear">Clear</button>
+        <button class="btn" id="undoBtn" disabled>Undo</button>
       </div>
 
       <div class="status" id="status">Paint a state, or load the corner hypothesis.</div>
+
+      <div class="io">
+        <span class="io-label">save / share</span>
+        <button class="btn" id="saveJson">Save JSON</button>
+        <button class="btn" id="copyJson">Copy JSON</button>
+        <button class="btn" id="openJson">Open JSON</button>
+        <button class="btn" id="savePng">Save PNG</button>
+      </div>
+      <div class="exp" id="pngRow" hidden>
+        <label>PNG preview — long-press it to save</label>
+        <img id="pngOut" alt="the painted board">
+      </div>
+      <textarea id="jsonFallback" rows="6" spellcheck="false" hidden></textarea>
     </div>
 
     <div class="panel">
@@ -530,7 +531,6 @@ function refresh() {
     ? cands.map(c => '<p><b>' + cellName(c.row.i) + ' reads ' + c.row.v + '</b>: a hidden capitol within ' + Math.floor((c.row.v + 1) / 2) + ' steps, i.e. ' + c.cand.map(cellName).join(', ') + '.</p>').join('')
     : '<p>No square currently demands a hidden capitol.</p>';
 
-  $('jsonOut').value = JSON.stringify(boardJSON(), null, 2);
   save();
 }
 
@@ -725,20 +725,39 @@ $('saveJson').addEventListener('click', () => {
   const data = boardJSON();
   const text = JSON.stringify(data, null, 2);
   const name = 'metric-too-ledger-' + stamp() + '.json';
-  $('jsonOut').value = text;
   download(new Blob([text], { type: 'application/json' }), name);
-  toast('JSON ready: ' + name + '. The same text is in the box below - copy it if the download was blocked.', 'good');
+  toast('JSON ready: ' + name + '. Copy JSON puts the very same text on your clipboard.', 'good');
   setStatus('JSON ready: <b>' + name + '</b> - ' + data.states.length + ' states and ' +
-    data.assumed_capitols.length + ' assumed capitols. The same text is in the box under the board; ' +
-    'a rule tool can read it with <code>python3 lr11/assume.py ' + name + '</code>.', 'good');
+    data.assumed_capitols.length + ' assumed capitols. <b>Copy JSON</b> puts the same text on your ' +
+    'clipboard, and a rule tool can read it with <code>python3 lr11/assume.py ' + name + '</code>.', 'good');
 });
 $('copyJson').addEventListener('click', async () => {
-  const box = $('jsonOut');
-  box.focus(); box.select();
+  const text = JSON.stringify(boardJSON(), null, 2);
   let ok = false;
-  try { ok = await navigator.clipboard.writeText(box.value); } catch (e) { ok = false; }
-  if (!ok) { try { ok = document.execCommand('copy'); } catch (e) { ok = false; } }
-  toast(ok ? 'JSON copied to the clipboard.' : 'Copying was blocked - the text is selected, copy it by hand.', ok ? 'good' : 'bad');
+  try { if (navigator.clipboard && navigator.clipboard.writeText) ok = await navigator.clipboard.writeText(text); } catch (e) { ok = false; }
+  if (!ok) {
+    // no async clipboard here (older browsers, and file:// pages): the old way,
+    // through a throw-away text area
+    const tmp = document.createElement('textarea');
+    tmp.value = text;
+    tmp.setAttribute('readonly', '');
+    tmp.style.cssText = 'position:fixed;top:-1000px;left:0;opacity:0';
+    document.body.appendChild(tmp);
+    tmp.select();
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    tmp.remove();
+  }
+  if (ok) {
+    toast('JSON copied to the clipboard - paste it to a friend, or to a rule tool.', 'good');
+    setStatus('JSON copied to the clipboard.', 'good');
+    return;
+  }
+  // last resort: show it, selected, so it can be copied by hand
+  const box = $('jsonFallback');
+  box.hidden = false;
+  box.value = text;
+  box.focus(); box.select();
+  toast('The browser would not let the page copy. The JSON is now in a box, selected - press Cmd/Ctrl+C.', 'bad');
 });
 $('openJson').addEventListener('click', () => $('fileIn').click());
 $('fileIn').addEventListener('change', async e => {
