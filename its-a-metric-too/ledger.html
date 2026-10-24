@@ -137,6 +137,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
       The <a href="map.html">capitol map</a> shows where a capitol could be; this page shows what your assumptions cost you.</p>
     </div>
     <div class="tools">
+      <button class="btn" id="undoBtn" disabled>Undo</button>
       <button class="btn" id="presetCorner">Corner hypothesis</button>
       <button class="btn" id="presetClear">Clear</button>
     </div>
@@ -146,6 +147,14 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
     <div class="plate">
       <div class="plate-head"><span><b>Original</b> · 11×11</span><span id="stateCount">no states yet</span></div>
       <div class="boardbox"><div id="board" style="--n:11"></div></div>
+      <p class="hint" id="cellKey">
+        <b>Top-left of a square</b> — the area of the state it is in; a <b>✱</b> means that state has
+        <b>no capitol</b> (its symmetries fix more than one square, or none), so it contributes no
+        destination and every step inside it costs the whole area. <b>Bottom-right</b> — the cheapest
+        distance from that square to a capitol we already know about, if every unknown square were as
+        small as possible. It is a floor, not the answer: a hidden capitol can be nearer, which is
+        exactly what a number below that floor demands.
+      </p>
 
       <div class="tools" id="tools">
         <span class="chip" aria-pressed="true" data-tool="paint"><span class="swatch" style="background:var(--t0)"></span>Paint state</span>
@@ -319,28 +328,36 @@ function ledger() {
   for (const [i, k] of assumed) { sizeOf.set(i, k); sources.add(i); }     // assumed capitols
 
   for (const s of stateInfo) {
-    if (!s.sym) notes.push({ k: 'bad', t: 'A painted region has no symmetry, so it is not a state at all.' });
-    else if (s.capitol < 0) notes.push({ k: 'warn', t: 'A painted state of size ' + s.cells.length + ' has NO capitol (its symmetries fix ' + s.fixes.join('/') + ' squares). It contributes no destination: every route out of it costs ' + s.cells.length + ' per step.' });
+    if (!s.sym) notes.push({ k: 'bad', t: 'A painted region has no symmetry at all, so it is not a state in the first place — repaint it as a shape that has one (a mirror or a rotation).' });
+    else if (s.capitol < 0) notes.push({ k: 'warn', t: 'This state of size ' + s.cells.length + ' has NO capitol. You do not paint capitols: they are derived from the shape, and here every symmetry fixes ' + s.fixes.join('/') + ' squares instead of exactly one. It is still a legal state, but it contributes no destination, and every step inside it costs ' + s.cells.length + '.' });
     if (s.capitol >= 0 && clueAt[s.capitol] >= 0 && clueAt[s.capitol] !== 0) notes.push({ k: 'bad', t: 'The capitol of a painted state sits on the ' + clueAt[s.capitol] + ' at ' + cellName(s.capitol) + ', but a capitol reads 0.' });
     for (const c of s.cells) if (clueAt[c] === 0 && s.capitol !== c) notes.push({ k: 'bad', t: 'The 0 at ' + cellName(c) + ' is inside a state whose capitol is elsewhere.' });
   }
 
-  const lower = book(sizeOf, sources, true);
-  const upper = book(sizeOf, sources, false);
+  // The two books are about the distance to the capitols we ALREADY KNOW about
+  // (the published 0s, the capitols of the states you painted, and the capitols
+  // you assumed).  They are not bounds on the true distance d: a hidden capitol
+  // can be nearer than both.  That asymmetry is the whole point --
+  //   farKnown  <  v  is a CONTRADICTION (a known capitol is strictly cheaper)
+  //   nearKnown >  v  is a DEMAND (a hidden capitol has to be strictly nearer)
+  const nearKnown = book(sizeOf, sources, true);    // optimistic: unknown squares as small as possible
+  const farKnown = book(sizeOf, sources, false);    // defensible: routes through two unknown squares are not used
 
   const rows = [];
   for (const [r, c, v] of CLUES) {
-    const i = r * N + c, L = lower.dist[i] === Infinity ? null : lower.dist[i], U = upper.dist[i] === Infinity ? null : upper.dist[i];
+    const i = r * N + c;
+    const L = nearKnown.dist[i] === Infinity ? null : nearKnown.dist[i];
+    const U = farKnown.dist[i] === Infinity ? null : farKnown.dist[i];
     let verdict, why;
-    if (L !== null && U !== null && L === U && L === v) { verdict = 'FORCED'; why = 'the distance is pinned by your assumptions alone'; }
-    else if (U !== null && U < v) { verdict = 'CONTRADICTED'; why = 'a capitol you already know about is reachable for ' + U + ', which is cheaper than ' + v; }
-    else if (U !== null && U === v) { verdict = 'TIGHT_GEODESIC'; why = 'the route to a known capitol costs exactly ' + v + ': no hidden capitol may be nearer'; }
-    else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, so a hidden capitol has to be within ' + v; }
-    else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the cheapest distance to a known capitol: a hidden capitol has to sit exactly on that route'; }
-    else { verdict = 'NEEDS_EXACT_PATH'; why = 'the number sits inside the possible range, so some route has to be paid for at exactly ' + v; }
-    rows.push({ i, v, L, U, verdict, why, route: U !== null ? upper.route(i) : null });
+    if (L !== null && U !== null && L === U && L === v) { verdict = 'FORCED'; why = 'your assumptions pin the distance to exactly ' + v; }
+    else if (U !== null && U < v) { verdict = 'CONTRADICTED'; why = 'a capitol you already know about is reachable for ' + U + ', which is cheaper than ' + v + ', so the number cannot be the minimum'; }
+    else if (U !== null && U === v) { verdict = 'TIGHT_GEODESIC'; why = 'a known capitol is reachable for at most ' + v + ', and the number says the minimum is ' + v + ', so no hidden capitol may be nearer'; }
+    else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, but the number says ' + v + ', so a hidden capitol has to be strictly nearer than that'; }
+    else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the floor: no capitol can be nearer than ' + v + ', and one has to sit at exactly ' + v; }
+    else { verdict = 'NEEDS_EXACT_PATH'; why = 'the number sits inside the range, so a capitol has to be reachable at exactly ' + v; }
+    rows.push({ i, v, L, U, verdict, why, route: U !== null ? farKnown.route(i) : null });
   }
-  return { list: stateInfo, sizeOf, sources, lower, upper, rows, notes };
+  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes };
 }
 
 /* ---------- where could a hidden capitol be? ---------- */
@@ -405,7 +422,7 @@ function paint(i) {
   if (assumed.has(i)) { const c = document.createElement('span'); c.className = 'cap'; d.appendChild(c); d.classList.add('assumed'); }
   else d.classList.remove('assumed');
   if (clueAt[i] >= 0) { const t = document.createElement('span'); t.textContent = clueAt[i]; d.appendChild(t); }
-  const dv = led.lower.dist[i];
+  const dv = led.nearKnown.dist[i];
   if (dv !== Infinity && dv !== 0) {
     const v = document.createElement('span'); v.className = 'dv'; v.textContent = dv;
     d.appendChild(v);
@@ -448,6 +465,7 @@ function refresh() {
   tb.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => { selected = +tr.dataset.i; refresh(); }));
 
   const nStates = led.list.length;
+  $('undoBtn').disabled = undoStack.length === 0;
   $('stateCount').textContent = nStates ? nStates + ' state' + (nStates > 1 ? 's' : '') + ' · ' +
     led.list.filter(s => s.capitol >= 0).length + ' with a capitol · ' + (N * N - led.sizeOf.size) + ' squares unknown' : 'no states yet';
 
@@ -516,6 +534,7 @@ $('tools').addEventListener('click', e => {
 });
 $('presetCorner').addEventListener('click', () => { pushUndo(); loadPreset(PRESET_CORNER); });
 $('presetClear').addEventListener('click', () => { pushUndo(); colors = new Array(N * N).fill(-1); assumed = new Map(); refresh(); });
+$('undoBtn').addEventListener('click', doUndo);
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); return; }
   if (e.key >= '0' && e.key <= '9') { paintColor = +e.key; tool = 'paint'; }
