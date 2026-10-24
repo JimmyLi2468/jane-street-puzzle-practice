@@ -124,9 +124,31 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .sugg { display: flex; flex-wrap: wrap; gap: 6px; }
 .sugg button { font-size: 0.8rem; padding: 4px 9px; }
 details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
+/* the export area: a download can be blocked, so the same content is always
+   on the page as text (copyable) and as a picture (saveable by long-press) */
+.exports { display: grid; gap: 10px; }
+.exp { display: grid; gap: 5px; }
+.exp label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; }
+.exp textarea {
+  width: 100%; font: 500 11px/1.45 var(--f-num); color: var(--ink); background: var(--blank);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; resize: vertical;
+}
+.exp img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--ground); }
+/* the toast: whatever happened has to be visible without scrolling */
+.toast {
+  position: fixed; left: 50%; top: 10px; z-index: 50; max-width: min(92vw, 560px);
+  transform: translate(-50%, -260%); opacity: 0; pointer-events: none;
+  background: var(--ink); color: var(--sheet); border-radius: 8px; padding: 9px 14px;
+  font-size: 0.86rem; line-height: 1.35; box-shadow: 0 6px 22px rgba(0,0,0,.24);
+  transition: transform .22s ease, opacity .22s ease;
+}
+.toast.show { transform: translate(-50%, 0); opacity: 1; }
+.toast.good { background: var(--good); color: #fff; }
+.toast.bad { background: var(--bad); color: #fff; }
 </style>
 </head>
 <body>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="wrap">
   <a class="back" href="index.html">← All puzzles</a>
   <header>
@@ -160,6 +182,18 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         small as possible. It is a floor, not the answer: a hidden capitol can be nearer, which is
         exactly what a number below that floor demands.
       </p>
+
+      <div class="exports">
+        <div class="exp">
+          <label for="jsonOut">JSON — this is what a rule tool reads</label>
+          <textarea id="jsonOut" rows="6" spellcheck="false"></textarea>
+          <div class="tools"><button class="btn" id="copyJson">Copy JSON</button></div>
+        </div>
+        <div class="exp" id="pngRow" hidden>
+          <label>PNG preview — long-press it to save</label>
+          <img id="pngOut" alt="the painted board">
+        </div>
+      </div>
 
       <div class="tools" id="tools">
         <span class="chip" aria-pressed="true" data-tool="paint"><span class="swatch" style="background:var(--t0)"></span>Paint state</span>
@@ -496,6 +530,7 @@ function refresh() {
     ? cands.map(c => '<p><b>' + cellName(c.row.i) + ' reads ' + c.row.v + '</b>: a hidden capitol within ' + Math.floor((c.row.v + 1) / 2) + ' steps, i.e. ' + c.cand.map(cellName).join(', ') + '.</p>').join('')
     : '<p>No square currently demands a hidden capitol.</p>';
 
+  $('jsonOut').value = JSON.stringify(boardJSON(), null, 2);
   save();
 }
 
@@ -518,12 +553,25 @@ function loadPreset(p) {
 }
 
 /* ---------- save and load ---------- */
+function toast(msg, kind) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (kind ? ' ' + kind : '');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { t.className = 'toast'; }, 6000);
+}
 function download(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  // the anchor must survive a moment: some browsers (notably older Safari)
+  // process the download asynchronously and drop it if the link is removed
+  // straight away
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 4000);
 }
 function stamp() {
   const d = new Date(), p = n => String(n).padStart(2, '0');
@@ -567,8 +615,7 @@ function boardPNG() {
   const cv = document.createElement('canvas');
   cv.width = W * dpr; cv.height = H * dpr;
   const g = cv.getContext('2d');
-  g.scale(dpr, dpr);
-  const cs = getComputedStyle(document.documentElement);
+  g.scale(dpr, dpr);  const cs = getComputedStyle(document.documentElement);
   const C = n => (cs.getPropertyValue(n) || '').trim() || '#ffffff';
   const led = lastLedger;
   g.fillStyle = C('--ground'); g.fillRect(0, 0, W, H);
@@ -632,7 +679,17 @@ function boardPNG() {
     pad, y0 + N * S + 28);
   g.fillText(Object.entries(tally).map(([k, v]) => v + ' ' + k.replace(/_/g, ' ').toLowerCase()).join('   '),
     pad, y0 + N * S + 46);
-  cv.toBlob(b => download(b, 'metric-too-ledger-' + stamp() + '.png'), 'image/png');
+  const name = 'metric-too-ledger-' + stamp() + '.png';
+  cv.toBlob(b => {
+    if (!b) { toast('The picture could not be made in this browser.', 'bad'); return; }
+    const url = URL.createObjectURL(b);
+    const img = $('pngOut');
+    img.src = url; img.hidden = false;
+    $('pngRow').hidden = false;
+    download(b, name);
+    toast('Picture ready: ' + name + '. It is also shown below - long-press it to save on a phone.', 'good');
+    setStatus('Picture ready: <b>' + name + '</b>. It is shown below the board as well; on a phone, long-press it to save.', 'good');
+  }, 'image/png');
 }
 
 /* ---------- events ---------- */
@@ -662,10 +719,22 @@ $('presetClear').addEventListener('click', () => { pushUndo(); colors = new Arra
 $('undoBtn').addEventListener('click', doUndo);
 $('saveJson').addEventListener('click', () => {
   const data = boardJSON();
-  download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
-    'metric-too-ledger-' + stamp() + '.json');
-  setStatus('Saved ' + data.states.length + ' states and ' + data.assumed_capitols.length +
-    ' assumed capitols as JSON. The same file can be opened here, or read by the rule tools.', 'good');
+  const text = JSON.stringify(data, null, 2);
+  const name = 'metric-too-ledger-' + stamp() + '.json';
+  $('jsonOut').value = text;
+  download(new Blob([text], { type: 'application/json' }), name);
+  toast('JSON ready: ' + name + '. The same text is in the box below - copy it if the download was blocked.', 'good');
+  setStatus('JSON ready: <b>' + name + '</b> - ' + data.states.length + ' states and ' +
+    data.assumed_capitols.length + ' assumed capitols. The same text is in the box under the board; ' +
+    'a rule tool can read it with <code>python3 lr11/assume.py ' + name + '</code>.', 'good');
+});
+$('copyJson').addEventListener('click', async () => {
+  const box = $('jsonOut');
+  box.focus(); box.select();
+  let ok = false;
+  try { ok = await navigator.clipboard.writeText(box.value); } catch (e) { ok = false; }
+  if (!ok) { try { ok = document.execCommand('copy'); } catch (e) { ok = false; } }
+  toast(ok ? 'JSON copied to the clipboard.' : 'Copying was blocked - the text is selected, copy it by hand.', ok ? 'good' : 'bad');
 });
 $('openJson').addEventListener('click', () => $('fileIn').click());
 $('fileIn').addEventListener('change', async e => {
