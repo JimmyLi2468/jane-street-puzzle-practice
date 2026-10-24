@@ -594,6 +594,9 @@ function boardJSON() {
     n: N,
     saved: new Date().toISOString(),
     published: "Jane Street, It's a Metric, Too (October 2026) -- the 33 official numbers",
+    what_this_is: "the board only: the states you are assuming and the capitols you are assuming. "
+      + "The verdicts and notes are NOT here on purpose -- they are derived from this board and the "
+      + "published numbers, so a rule tool recomputes them instead of trusting a stored conclusion.",
     states: led.list.map((s, id) => ({
       id,
       colour: colors[s.cells[0]],          // the palette colour it was painted with
