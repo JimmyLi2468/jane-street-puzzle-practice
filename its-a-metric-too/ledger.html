@@ -166,7 +166,6 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
       <button class="btn" id="saveJson">Save JSON</button>
       <button class="btn" id="openJson">Open JSON</button>
       <button class="btn" id="savePng">Save PNG</button>
-      <button class="btn" id="sendBtn">Send to sandbox</button>
       <input type="file" id="fileIn" accept="application/json,.json" hidden>
     </div>
   </header>
@@ -186,7 +185,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
 
       <div class="exports">
         <div class="exp">
-          <label for="jsonOut">JSON — this is what a rule tool reads</label>
+          <label for="jsonOut">JSON — copy this to share the board (no download needed)</label>
           <textarea id="jsonOut" rows="6" spellcheck="false"></textarea>
           <div class="tools"><button class="btn" id="copyJson">Copy JSON</button></div>
         </div>
@@ -755,27 +754,6 @@ $('fileIn').addEventListener('change', async e => {
   e.target.value = '';
 });
 $('savePng').addEventListener('click', () => boardPNG());
-$('sendBtn').addEventListener('click', async () => {
-  const btn = $('sendBtn');
-  btn.disabled = true;
-  btn.textContent = 'Sending...';
-  try {
-    const cv = drawBoardCanvas();
-    const payload = { board: boardJSON(), png: cv.toDataURL('image/png') };
-    const res = await fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const j = await res.json();
-    if (!j.ok) throw new Error(j.error || 'the server said no');
-    toast('Sent to the sandbox: ' + j.written.join(', '), 'good');
-    setStatus('Sent to the sandbox: <b>' + j.written.map(f => f.replace(/</g, '&lt;')).join('</b>') +
-      '</b>. It is in the workspace now - no download needed.', 'good');
-  } catch (e) {
-    toast('Could not reach the sandbox server (' + e.message + '). Copy the JSON from the box under the board instead.', 'bad');
-    setStatus('Could not reach the sandbox server: ' + e.message +
-      '. Copy the JSON from the box under the board and paste it here.', 'bad');
-  }
-  btn.disabled = false;
-  btn.textContent = 'Send to sandbox';
-});
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); return; }
   if (e.key >= '0' && e.key <= '9') { paintColor = +e.key; tool = 'paint'; }
