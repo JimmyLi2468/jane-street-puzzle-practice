@@ -473,6 +473,16 @@ function paint(i) {
 function setStatus(html, kind) { const st = $('status'); st.innerHTML = html; st.className = 'status' + (kind ? ' ' + kind : ''); }
 function pushUndo() { undoStack.push({ c: colors.slice(), a: [...assumed] }); if (undoStack.length > 200) undoStack.shift(); }
 function doUndo() { const u = undoStack.pop(); if (!u) return; colors = u.c; assumed = new Map(u.a); refresh(); }
+function setPaintColor(id) {
+  if (!Number.isInteger(id) || id < 0 || id >= NCOL) id = 0;   // a bad id would paint nothing at all
+  paintColor = id;
+  tool = 'paint';
+  $('tools').querySelectorAll('.chip[data-tool]').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.tool === 'paint')));
+  $('palette').querySelectorAll('.chip[data-id]').forEach(c => c.setAttribute('aria-pressed', String(+c.dataset.id === id)));
+  const sw = $('palette').querySelector('.chip[data-id="' + id + '"] .swatch');
+  if (sw) sw.style.outline = '2px solid var(--ink)';
+  $('palette').querySelectorAll('.chip[data-id] .swatch').forEach(o => { if (o !== sw) o.style.outline = ''; });
+}
 function setCell(i) {
   if (tool === 'erase') { colors[i] = -1; assumed.delete(i); }
   else if (tool === 'cap') {
@@ -586,6 +596,7 @@ function boardJSON() {
     published: "Jane Street, It's a Metric, Too (October 2026) -- the 33 official numbers",
     states: led.list.map((s, id) => ({
       id,
+      colour: colors[s.cells[0]],          // the palette colour it was painted with
       size: s.cells.length,
       cells: s.cells.map(i => [Math.floor(i / N), i % N]),
       symmetry: regionInfo(s.cells, N).symNames,
@@ -715,8 +726,10 @@ $('tools').addEventListener('click', e => {
     $('tools').querySelectorAll('.chip[data-tool]').forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
     return;
   }
-  const sw = e.target.closest('.swatch');
-  if (sw) { paintColor = +sw.dataset.id; tool = 'paint'; $('tools').querySelectorAll('.chip[data-tool]').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.tool === 'paint'))); }
+  // the palette: the id is on the chip, and clicking the little swatch inside
+  // it must count as clicking the chip
+  const palChip = e.target.closest('.chip[data-id]');
+  if (palChip) { setPaintColor(+palChip.dataset.id); return; }
 });
 $('presetCorner').addEventListener('click', () => { pushUndo(); loadPreset(PRESET_CORNER); });
 $('presetClear').addEventListener('click', () => { pushUndo(); colors = new Array(N * N).fill(-1); assumed = new Map(); refresh(); });
@@ -775,14 +788,16 @@ $('fileIn').addEventListener('change', async e => {
 $('savePng').addEventListener('click', () => boardPNG());
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); return; }
-  if (e.key >= '0' && e.key <= '9') { paintColor = +e.key; tool = 'paint'; }
+  if (e.key >= '0' && e.key <= '9') setPaintColor(+e.key);
 });
 
 /* ---------- palette ---------- */
 const pal = $('palette');
 for (let i = 0; i < NCOL; i++) {
   const s = document.createElement('span');
-  s.className = 'chip'; s.dataset.id = i; s.innerHTML = '<span class="swatch" style="background:var(' + TONES[i] + ')"></span>' + i;
+  s.className = 'chip'; s.dataset.id = i; s.title = 'state colour ' + i;
+  s.setAttribute('aria-pressed', String(i === 0));
+  s.innerHTML = '<span class="swatch" style="background:var(' + TONES[i] + ')"></span>' + i;
   pal.appendChild(s);
 }
 
@@ -792,6 +807,7 @@ function save() { store.set('mt2ledger', { c: colors, a: [...assumed] }); }
   const saved = store.get('mt2ledger');
   if (saved) { colors = saved.c; assumed = new Map(saved.a); }
   buildBoard();
+  setPaintColor(0);
   refresh();
 })();
 </script>
