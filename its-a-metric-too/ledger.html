@@ -534,7 +534,12 @@ function ledger() {
     let verdict, why;
     if (L !== null && U !== null && L === U && L === v) { verdict = 'FORCED'; why = 'your assumptions pin the distance to exactly ' + v; }
     else if (U !== null && U < v) { verdict = 'CONTRADICTED'; why = 'a capitol you already know about is reachable for ' + U + ', which is cheaper than ' + v + ', so the number cannot be the minimum'; }
-    else if (complete && !produced) { verdict = 'UNPRODUCIBLE'; why = 'no walk out of this square can cost exactly ' + v + ' (the reachable costs are ' + pay.slice(0, 12).join(', ') + (pay.length > 12 ? ', ...' : '') + '), so this number cannot be produced at all'; }
+    else if (complete && !produced) {
+      verdict = 'UNPRODUCIBLE';
+      why = 'no walk out of this square can cost exactly ' + v
+        + (pay.length ? ' (the reachable costs are ' + pay.slice(0, 12).join(', ') + (pay.length > 12 ? ', ...' : '') + ')' : ' (not even one known capitol is within reach)')
+        + ', so this number cannot be produced at all';
+    }
     else if (U !== null && U === v) { verdict = 'TIGHT_GEODESIC'; why = 'a known capitol is reachable for at most ' + v + ', and the number says the minimum is ' + v + ', so no hidden capitol may be nearer'; }
     else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, but the number says ' + v + ', so a hidden capitol has to be strictly nearer than that' + (produced ? '' : '; no walk to a known capitol costs exactly ' + v + ' either'); }
     else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the floor: no capitol can be nearer than ' + v + ', and one has to sit at exactly ' + v; }
