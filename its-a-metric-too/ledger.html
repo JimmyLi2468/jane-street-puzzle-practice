@@ -113,6 +113,8 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .pay { margin-top: 3px; font-size: 11px; }
 .pay.ok { color: var(--good); }
 .pay.mid { color: var(--warn); }
+.build { margin: 12px 0 2px; font-size: 11px; color: #8a8f98; }
+.build a { color: #6ea8c4; }
 .pay.no { color: var(--bad); }
 .v.NEEDS_HIDDEN_CAPITOL, .v.NEEDS_EXACT_PATH { color: var(--warn); }
 .v.FORCED, .v.TIGHT_GEODESIC, .v.TIGHT_CHEAPEST { color: var(--good); }
@@ -239,6 +241,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         <label>PNG preview — long-press it to save</label>
         <img id="pngOut" alt="the painted board">
       </div>
+      <div class="build">build 2026-10-25b · 两轴版(违反轴 + 满足轴 PRODUCED / TUNABLE / UNPAYABLE)· <a href="https://github.com/johnlam1968/jane-street-puzzle-practice/tree/feat/assumption-ledger" target="_blank" rel="noopener">源码</a></div>
       <textarea id="jsonFallback" rows="6" spellcheck="false" hidden></textarea>
     </div>
 
