@@ -110,6 +110,9 @@ table.ledger tr { cursor: pointer; }
 table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .v { font-weight: 700; }
 .v.CONTRADICTED, .v.UNPRODUCIBLE { color: var(--bad); }
+.pay { margin-top: 3px; font-size: 11px; }
+.pay.ok { color: var(--good); }
+.pay.no { color: var(--bad); }
 .v.NEEDS_HIDDEN_CAPITOL, .v.NEEDS_EXACT_PATH { color: var(--warn); }
 .v.FORCED, .v.TIGHT_GEODESIC, .v.TIGHT_CHEAPEST { color: var(--good); }
 .why { color: var(--muted); font-family: var(--f-body); font-size: 0.78rem; line-height: 1.35; }
@@ -603,8 +606,11 @@ function refresh() {
   const tb = $('verdicts').querySelector('tbody');
   tb.innerHTML = led.rows.map(r => {
     const range = (r.L === null ? '–' : r.L) + '–' + (r.U === null ? '∞' : r.U);
+    const canPay = r.produced
+      ? '<div class="pay ok">付得起:该数在可达代价集合里(' + r.reachable.length + ' 个可达值)</div>'
+      : '<div class="pay no">付不起:没有任何一条路能正好花掉 ' + r.v + '</div>';
     return '<tr data-i="' + r.i + '"><td>' + cellName(r.i) + '</td><td>' + r.v + '</td><td>' + range + '</td>' +
-      '<td><span class="v ' + r.verdict + '">' + r.verdict + '</span><div class="why">' + r.why + '</div>' +
+      '<td><span class="v ' + r.verdict + '">' + r.verdict + '</span><div class="why">' + r.why + '</div>' + canPay +
       (r.route && r.route.length > 1 ? '<div class="route">' + r.route.map(cellName).join(' → ') + '</div>' : '') + '</td></tr>';
   }).join('');
   tb.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => { selected = +tr.dataset.i; refresh(); }));
@@ -626,6 +632,14 @@ function refresh() {
   else { st.className = 'status good'; st.innerHTML = 'No contradiction: every published number is still reachable under these assumptions.'; }
 
   const notes = led.notes.slice();
+  if (led.complete && led.satisfaction) {
+    const sat = led.satisfaction, wrong = Object.keys(sat.wrong);
+    notes.push({ k: sat.all_numbers_produced && sat.all_numbers_are_the_cheapest ? 'good' : 'bad',
+      t: '铺砌已填满(121 格全归了州),这时候可达代价集合是精确的。' +
+         '满足性检验:33 个已发布数里,' + (sat.all_numbers_produced ? '每一个都能被某条路走出来' : '有 ' + (33 - Object.values(sat.wrong).filter(x => x.actual !== null).length) + ' 个走不出来') +
+         ';且' + (sat.all_numbers_are_the_cheapest ? '每一个都恰好是最小值' : '其中 ' + wrong.length + ' 个不是最小值') + '。' +
+         (wrong.length ? '对不上的: ' + wrong.map(k => k + ' 读 ' + sat.wrong[k].published + ' 但实际是 ' + sat.wrong[k].actual).join('; ') + '。' : '') });
+  }
   const singles = singletonCandidates();
   if (singles.length) {
     notes.push({ k: 'warn', t: 'A square that reads 1 needs a 1×1 state right next to it (a step of cost 1). Candidates: ' +
