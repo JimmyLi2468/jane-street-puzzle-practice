@@ -113,6 +113,8 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .pay { margin-top: 3px; font-size: 11px; }
 .pay.ok { color: var(--good); }
 .pay.mid { color: var(--warn); }
+.cell .cost { position: absolute; bottom: 1px; left: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 600; color: #2f6f7d; line-height: 1; }
+.cell .cost.zero { color: var(--muted); font-weight: 500; }
 .build { margin: 12px 0 2px; font-size: 11px; color: #8a8f98; }
 .build a { color: #6ea8c4; }
 .pay.no { color: var(--bad); }
@@ -203,7 +205,10 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         destination and every step inside it costs the whole area. <b>Bottom-right</b> — the cheapest
         distance from that square to a capitol we already know about, if every unknown square were as
         small as possible. It is a floor, not the answer: a hidden capitol can be nearer, which is
-        exactly what a number below that floor demands.
+        exactly what a number below that floor demands. <b>Bottom-left</b> — the cost the current
+        assumptions actually pin down: the cheapest route to a known or assumed capitol that uses only
+        squares whose state size is known. Where no such route exists yet, nothing is shown there — the
+        free squares would have to be sized first.
       </p>
 
       <div class="tools" id="tools">
@@ -637,6 +642,16 @@ function paint(i) {
     const v = document.createElement('span'); v.className = 'dv'; v.textContent = dv;
     d.appendChild(v);
   }
+  // bottom-left: the cost the current assumptions actually pin down -- the
+  // cheapest route to a known or assumed capitol that uses only squares whose
+  // state size is known.  Infinity means no such route exists yet: the free
+  // squares would have to be sized first.
+  const cv = led.farKnown.dist[i];
+  if (cv !== Infinity) {
+    const v = document.createElement('span'); v.className = 'cost'; v.textContent = cv;
+    if (cv === 0) v.classList.add('zero');
+    d.appendChild(v);
+  }
   if (selected === i) d.classList.add('sel'); else d.classList.remove('sel');
 }
 function setStatus(html, kind) { const st = $('status'); st.innerHTML = html; st.className = 'status' + (kind ? ' ' + kind : ''); }
@@ -909,6 +924,12 @@ function drawBoardCanvas() {
       g.fillStyle = C('--muted'); g.font = '9px system-ui, sans-serif';
       g.textAlign = 'right'; g.textBaseline = 'bottom';
       g.fillText(String(dv), x + S - 3, y + S - 2);
+    }
+    const cv = led.farKnown.dist[i];
+    if (cv !== Infinity) {
+      g.fillStyle = cv === 0 ? C('--muted') : '#2f6f7d'; g.font = '9px system-ui, sans-serif';
+      g.textAlign = 'left'; g.textBaseline = 'bottom';
+      g.fillText(String(cv), x + 3, y + S - 2);
     }
   }
   g.strokeStyle = C('--line'); g.lineWidth = 1;
