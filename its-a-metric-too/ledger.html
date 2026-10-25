@@ -112,6 +112,7 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .v.CONTRADICTED, .v.UNPRODUCIBLE { color: var(--bad); }
 .pay { margin-top: 3px; font-size: 11px; }
 .pay.ok { color: var(--good); }
+.pay.mid { color: var(--warn); }
 .pay.no { color: var(--bad); }
 .v.NEEDS_HIDDEN_CAPITOL, .v.NEEDS_EXACT_PATH { color: var(--warn); }
 .v.FORCED, .v.TIGHT_GEODESIC, .v.TIGHT_CHEAPEST { color: var(--good); }
@@ -428,6 +429,57 @@ function reachableCosts(sizeOf, sources, maxCost) {
   return out;
 }
 
+/* ---------- the costs that are FULLY DETERMINED ----------
+   A route that never touches a square whose state size is still unknown has
+   a cost that does not depend on how the free squares are filled in.  So a
+   published number that such a route pays can be paid no matter what the
+   rest of the board turns out to be -- the strong, unconditional answer.
+   Routes that do touch free squares can only be paid if those squares are
+   sized just so (TUNABLE); numbers no route can pay need a hidden capitol
+   (UNPAYABLE) -- which on a complete board is a contradiction in itself.
+
+   The two questions are INDEPENDENT of each other:
+     "is the number the minimum?"  -> the two books, the VERDICT column
+     "can the number be paid at all?" -> this, the PAYABLE column
+   A number can be payable and still be wrong (a cheaper route exists), and
+   a number can be the minimum and still be unpayable. */
+function determinedCosts(sizeOf, sources, maxCost) {
+  const NN = N * N, W = maxCost + 1;
+  const seen = new Uint8Array(NN * W), prev = new Map(), stack = [];
+  for (const s of sources) {
+    if (s < 0 || s >= NN || seen[s * W]) continue;
+    seen[s * W] = 1;
+    // a capitol whose state size is unknown: only the trivial route (cost 0),
+    // and it cannot be passed through -- the crossing cost is not determined
+    if (sizeOf.get(s) !== undefined) stack.push([s, 0]);
+  }
+  while (stack.length) {
+    const st = stack.pop(), u = st[0], c = st[1];
+    for (const v of nbrs(u, N)) {
+      const ku = sizeOf.get(u), kv = sizeOf.get(v);
+      if (ku === undefined || kv === undefined) continue;   // a free square: cost not fixed
+      const cc = c + Math.min(ku, kv);
+      if (cc > maxCost) continue;
+      const k = v * W + cc;
+      if (!seen[k]) { seen[k] = 1; prev.set(v + ':' + cc, u + ':' + c); stack.push([v, cc]); }
+    }
+  }
+  const costOf = (i, c) => {
+    const a = []; let key = i + ':' + c;
+    while (prev.has(key)) { const [u, uc] = key.split(':').map(Number); a.push([u, uc]); key = prev.get(key); }
+    const [si, sc] = key.split(':').map(Number);
+    a.push([si, sc]);                               // the source itself
+    return a.reverse();
+  };
+  const out = [];
+  for (let i = 0; i < NN; i++) {
+    const a = [];
+    for (let c = 0; c <= maxCost; c++) if (seen[i * W + c]) a.push(c);
+    out.push({ costs: a, route: c => costOf(i, c) });
+  }
+  return out;
+}
+
 /* ---------- the ledger ---------- */
 function ledger() {
   const { list } = components(colors, N);
@@ -462,13 +514,23 @@ function ledger() {
   const complete = sizeOf.size === N * N;
   const maxV = CLUES.reduce((m, x) => Math.max(m, x[2]), 0);
   const reach = reachableCosts(sizeOf, sources, maxV);
+  const det = determinedCosts(sizeOf, sources, maxV);
 
   const rows = [];
   for (const [r, c, v] of CLUES) {
     const i = r * N + c;
     const L = nearKnown.dist[i] === Infinity ? null : nearKnown.dist[i];
     const U = farKnown.dist[i] === Infinity ? null : farKnown.dist[i];
-    const pay = reach[i], produced = pay.indexOf(v) >= 0, cheapest = pay.length ? pay[0] : null;
+    const pay = reach[i], cheapest = pay.length ? pay[0] : null;
+    const fixed = det[i].costs, isFixed = fixed.indexOf(v) >= 0;
+    const produced = isFixed, tunable = !isFixed && pay.indexOf(v) >= 0;
+    const payable = isFixed ? 'PRODUCED' : (tunable ? 'TUNABLE' : 'UNPAYABLE');
+    let witness = null, witnessCosts = null;
+    if (isFixed) {
+      const steps = det[i].route(v);
+      witness = steps.map(s => [((s[0] / N) | 0), s[0] % N]);
+      witnessCosts = steps.slice(0, -1).map((s, k) => Math.min(sizeOf.get(s[0]), sizeOf.get(steps[k + 1][0])));
+    }
     let verdict, why;
     if (L !== null && U !== null && L === U && L === v) { verdict = 'FORCED'; why = 'your assumptions pin the distance to exactly ' + v; }
     else if (U !== null && U < v) { verdict = 'CONTRADICTED'; why = 'a capitol you already know about is reachable for ' + U + ', which is cheaper than ' + v + ', so the number cannot be the minimum'; }
@@ -478,7 +540,10 @@ function ledger() {
     else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the floor: no capitol can be nearer than ' + v + ', and one has to sit at exactly ' + v; }
     else { verdict = 'NEEDS_EXACT_PATH'; why = 'the number sits inside the range, so a capitol has to be reachable at exactly ' + v; }
     rows.push({ i, v, L, U, verdict, why, route: U !== null ? farKnown.route(i) : null,
-                produced, reachable: pay, cheapest });
+                produced, payable, witness, witnessCosts,
+                witnessSimple: witness ? (new Set(witness).size === witness.length) : null,
+                tuning: (payable === 'TUNABLE' && pay.length) ? v - pay[0] : null,
+                reachable: pay, determined: fixed, cheapest });
   }
 
   // The satisfaction test: on a complete tiling, every published number must
@@ -606,9 +671,20 @@ function refresh() {
   const tb = $('verdicts').querySelector('tbody');
   tb.innerHTML = led.rows.map(r => {
     const range = (r.L === null ? '–' : r.L) + '–' + (r.U === null ? '∞' : r.U);
-    const canPay = r.produced
-      ? '<div class="pay ok">付得起:该数在可达代价集合里(' + r.reachable.length + ' 个可达值)</div>'
-      : '<div class="pay no">付不起:没有任何一条路能正好花掉 ' + r.v + '</div>';
+    let canPay;
+    if (r.payable === 'PRODUCED') {
+      const simple = r.witnessSimple ? '' : '(这条绕了圈,所以还有更便宜的路:这个数不是最小值)';
+      canPay = '<div class="pay ok">付得起,而且<b>与空格无关</b>:'
+        + (r.witness ? r.witness.map(p2 => cellName(p2[0] * N + p2[1])).join(' → ') + ' = ' + r.witnessCosts.join('+') + ' = ' + r.witnessCosts.reduce((a, b) => a + b, 0) : '')
+        + simple + '</div>';
+    } else if (r.payable === 'TUNABLE') {
+      canPay = '<div class="pay mid">付得起,<b>但要空格来凑</b>:已知格子的路线凑不出 ' + r.v
+        + ',空格必须额外贡献 ' + r.tuning + ' 的代价(可走代价 ' + r.reachable[0] + '–' + r.reachable[r.reachable.length - 1] + ')</div>';
+    } else {
+      canPay = '<div class="pay no">付不起:没有任何一条路能正好花掉 ' + r.v
+        + (r.reachable.length ? '(已知首都能凑出 ' + r.reachable[0] + '–' + r.reachable[r.reachable.length - 1] + ')' : '(连已知首都都到不了)')
+        + ' ⇒ 只能靠一个隐藏首都</div>';
+    }
     return '<tr data-i="' + r.i + '"><td>' + cellName(r.i) + '</td><td>' + r.v + '</td><td>' + range + '</td>' +
       '<td><span class="v ' + r.verdict + '">' + r.verdict + '</span><div class="why">' + r.why + '</div>' + canPay +
       (r.route && r.route.length > 1 ? '<div class="route">' + r.route.map(cellName).join(' → ') + '</div>' : '') + '</td></tr>';
@@ -632,6 +708,12 @@ function refresh() {
   else { st.className = 'status good'; st.innerHTML = 'No contradiction: every published number is still reachable under these assumptions.'; }
 
   const notes = led.notes.slice();
+  {
+    const cnt = { PRODUCED: 0, TUNABLE: 0, UNPAYABLE: 0 };
+    for (const r of led.rows) cnt[r.payable]++;
+    notes.push({ k: 'info', t: '满足轴(与"是不是最小值"无关):' + cnt.PRODUCED + ' 个数有一条代价完全确定的路(与空格怎么填无关),'
+      + cnt.TUNABLE + ' 个数要靠空格调节才凑得出,' + cnt.UNPAYABLE + ' 个数任何路都凑不出(得靠隐藏首都)。' });
+  }
   if (led.complete && led.satisfaction) {
     const sat = led.satisfaction, wrong = Object.keys(sat.wrong);
     notes.push({ k: sat.all_numbers_produced && sat.all_numbers_are_the_cheapest ? 'good' : 'bad',
