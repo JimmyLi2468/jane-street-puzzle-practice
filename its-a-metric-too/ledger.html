@@ -151,6 +151,18 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
 </style>
 </head>
 <body>
+<noscript>
+  <div style="max-width:60ch;margin:24px auto;padding:14px 16px;border:1px solid var(--line);
+              border-radius:6px;background:var(--sheet);color:var(--ink);font-size:0.95rem;line-height:1.5">
+    <b>This page needs JavaScript</b>, and the grid below is drawn by it.<br><br>
+    If you opened this file from a preview (on iOS: a message attachment, AirDrop, or the
+    Files app), you are looking at a picture of the page, not the page itself -- iOS
+    previews do not run scripts, so the board stays empty and the buttons do nothing.
+    Open it in a browser instead: on iOS, share the file and choose <b>Open in Safari</b>;
+    on a computer, double-click it, or serve the folder with
+    <code>python3 -m http.server</code> and open the address it prints.
+  </div>
+</noscript>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="wrap">
   <a class="back" href="index.html">← All puzzles</a>
