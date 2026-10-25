@@ -260,7 +260,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         <label>PNG preview — long-press it to save</label>
         <img id="pngOut" alt="the painted board">
       </div>
-      <div class="build">build 2026-10-25b · 两轴版(违反轴 + 满足轴 PRODUCED / TUNABLE / UNPAYABLE)· <a href="https://github.com/johnlam1968/jane-street-puzzle-practice/tree/feat/assumption-ledger" target="_blank" rel="noopener">源码</a></div>
+      <div class="build">build 2026-10-25c · 两轴版(违反轴 + 满足轴 PRODUCED / TUNABLE / UNPAYABLE)· 假想首都必须是真州(大小须为奇数)· <a href="https://github.com/johnlam1968/jane-street-puzzle-practice/tree/feat/assumption-ledger" target="_blank" rel="noopener">源码</a></div>
       <textarea id="jsonFallback" rows="6" spellcheck="false" hidden></textarea>
     </div>
 
@@ -344,8 +344,7 @@ function nbrs(i, n) {
 }
 function regionInfo(cells, n) {
   let minC = n, maxC = -1, minR = n, maxR = -1;
-  const member = new Set(cells);
-  for (const i of cells) { const r = (i / n) | 0, c = i % n; minC = Math.min(minC, c); maxC = Math.max(maxC, c); minR = Math.min(minR, r); maxR = Math.max(maxR, r); }
+  const member = new Set(cells);  for (const i of cells) { const r = (i / n) | 0, c = i % n; minC = Math.min(minC, c); maxC = Math.max(maxC, c); minR = Math.min(minR, r); maxR = Math.max(maxR, r); }
   const p = minC + maxC, q = minR + maxR;
   let anySym = false, capOk = true, cap = -1; const fixes = [], symNames = [];
   for (let g = 0; g < 7; g++) {
@@ -384,6 +383,29 @@ function components(labels, n) {
     list.push({ cells, sym: info.sym, capitol: info.capitol, fixes: info.fixes });
   }
   return { comp, list };
+}
+
+/* ---------- can this assumed capitol be REAL? ----------
+   An assumed capitol is a square plus a state size.  But a capitol is not
+   a free parameter: it is the unique square fixed by every non-trivial
+   self-symmetry of a REAL state, and that state occupies real squares of
+   the board.  So the assumption "this square is the capitol of a state of
+   size k" has to be checkable.
+
+   Two facts make it checkable without a search:
+
+     * a state with a capitol is always ODD in size (a mirror axis that runs
+       along a column of squares fixes all of them, so even-sized states
+       never have a capitol);
+     * a state of size 1 is its own capitol.
+
+   So an EVEN assumed size is impossible on the spot.  For odd sizes the
+   page cannot enumerate every shape cheaply, so it says what is knowable:
+   the size is at least legal, and the assumption still has to be paid for
+   by real squares elsewhere on the board. */
+function capitolSizeImpossible(k) {
+  if (k % 2 === 0) return 'even';
+  return null;
 }
 function cellName(i) { const r = (i / N) | 0, c = i % N; return 'r' + r + 'c' + c; }
 
@@ -534,6 +556,14 @@ function ledger() {
     else if (s.capitol < 0) notes.push({ k: 'warn', t: 'This state of size ' + s.cells.length + ' has NO capitol. You do not paint capitols: they are derived from the shape, and here every symmetry fixes ' + s.fixes.join('/') + ' squares instead of exactly one. It is still a legal state, but it contributes no destination, and every step inside it costs ' + s.cells.length + '.' });
     if (s.capitol >= 0 && clueAt[s.capitol] >= 0 && clueAt[s.capitol] !== 0) notes.push({ k: 'bad', t: 'The capitol of a painted state sits on the ' + clueAt[s.capitol] + ' at ' + cellName(s.capitol) + ', but a capitol reads 0.' });
     for (const c of s.cells) if (clueAt[c] === 0 && s.capitol !== c) notes.push({ k: 'bad', t: 'The 0 at ' + cellName(c) + ' is inside a state whose capitol is elsewhere.' });
+  }
+
+  // An assumed capitol has to be a REAL state: a state with a capitol is
+  // always odd in size, so an even assumed size cannot happen at all.
+  for (const [i, k] of assumed) {
+    if (capitolSizeImpossible(k) === 'even') {
+      notes.push({ k: 'bad', t: 'You assumed a state of size ' + k + ' for the capitol at ' + cellName(i) + ', but a state with a capitol is always odd: an even-sized state has a mirror axis running along a column of squares, which fixes more than one of them, so it has no capitol at all. Use an odd size.' });
+    }
   }
 
   // The two books are about the distance to the capitols we ALREADY KNOW about
