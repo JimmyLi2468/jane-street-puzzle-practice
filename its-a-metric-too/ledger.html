@@ -118,6 +118,11 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .cell .cost.match { color: #14181d; font-weight: 800; }
 .cell .cost.higher { color: #1f7a3d; font-weight: 700; }
 .cell .cost.lower { color: #b58900; font-weight: 700; }
+.cell .badge { position: absolute; top: 1px; right: 2px; font-size: max(7px, calc(100cqw / var(--n) * 0.16)); line-height: 1; }
+.cell .badge.confirmed { color: #14181d; }
+.cell .badge.open { color: #5b6b76; }
+.cell .badge.demand { color: #b58900; }
+.cell .badge.error { color: #c0392b; font-weight: 700; }
 .build { margin: 12px 0 2px; font-size: 11px; color: #8a8f98; }
 .build a { color: #6ea8c4; }
 .pay.no { color: var(--bad); }
@@ -213,7 +218,11 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         squares whose state size is known. Where no such route exists yet, nothing is shown there — the
         free squares would have to be sized first. Its colour compares that cost with the published
         number in the same square: <b>black and bold</b> when they agree, <b>green</b> when the calculated
-        cost is higher, <b>amber</b> when it is lower.
+        cost is higher, <b>amber</b> when it is lower. <b>Top-right</b> — the verdict, as a badge:
+        <b>&#9679;</b> confirmed (the assumptions pin the number exactly),
+        <b>&#9675;</b> open (payable, but not pinned down yet),
+        <b>&#9650;</b> demand (an unrevealed capitol has to be nearer),
+        <b>&#10005;</b> contradicted (a known capitol is cheaper, so the number is wrong).
       </p>
 
       <div class="tools" id="tools">
@@ -493,6 +502,21 @@ function determinedCosts(sizeOf, sources, maxCost) {
   return out;
 }
 
+/* ---------- verdict badges ----------
+   Four families, so the board says at a glance which published numbers the
+   current assumptions already settle and which are still asking for something.
+   The shape differs as well as the colour, so it survives a black-and-white
+   print. */
+const VERDICT_BADGE = {
+  FORCED:            { g: 'confirmed', ch: '\u25CF', c: '#14181d', t: 'confirmed: the assumptions pin this number exactly' },
+  TIGHT_GEODESIC:    { g: 'open',      ch: '\u25CB', c: '#5b6b76', t: 'open: a known capitol pays exactly this, but a hidden one may be nearer' },
+  TIGHT_CHEAPEST:    { g: 'open',      ch: '\u25CB', c: '#5b6b76', t: 'open: this is the floor, no capitol can be nearer' },
+  NEEDS_EXACT_PATH:  { g: 'open',      ch: '\u25CB', c: '#5b6b76', t: 'open: some capitol has to be reachable at exactly this cost' },
+  NEEDS_HIDDEN_CAPITOL: { g: 'demand', ch: '\u25B2', c: '#b58900', t: 'demand: an unrevealed capitol has to be nearer than this' },
+  CONTRADICTED:      { g: 'error',     ch: '\u2715', c: '#c0392b', t: 'contradicted: a known capitol is cheaper, so this cannot be the minimum' },
+  UNPRODUCIBLE:      { g: 'error',     ch: '\u2715', c: '#c0392b', t: 'unproducible: no route can pay exactly this' },
+};
+
 /* ---------- the ledger ---------- */
 function ledger() {
   const { list } = components(colors, N);
@@ -530,6 +554,7 @@ function ledger() {
   const det = determinedCosts(sizeOf, sources, maxV);
 
   const rows = [];
+  const verdictOf = {};
   for (const [r, c, v] of CLUES) {
     const i = r * N + c;
     const L = nearKnown.dist[i] === Infinity ? null : nearKnown.dist[i];
@@ -557,6 +582,7 @@ function ledger() {
     else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, but the number says ' + v + ', so a hidden capitol has to be strictly nearer than that' + (produced ? '' : '; no walk to a known capitol costs exactly ' + v + ' either'); }
     else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the floor: no capitol can be nearer than ' + v + ', and one has to sit at exactly ' + v; }
     else { verdict = 'NEEDS_EXACT_PATH'; why = 'the number sits inside the range, so a capitol has to be reachable at exactly ' + v; }
+    verdictOf[i] = verdict;
     rows.push({ i, v, L, U, verdict, why, route: U !== null ? farKnown.route(i) : null,
                 produced, payable, witness, witnessCosts,
                 witnessSimple: witness ? (new Set(witness).size === witness.length) : null,
@@ -577,7 +603,7 @@ function ledger() {
       wrong: wrong,
     };
   }
-  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction };
+  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction, verdictOf };
 }
 
 /* ---------- where could a hidden capitol be? ---------- */
@@ -641,7 +667,11 @@ function paint(i) {
   }
   if (assumed.has(i)) { const c = document.createElement('span'); c.className = 'cap'; d.appendChild(c); d.classList.add('assumed'); }
   else d.classList.remove('assumed');
-  if (clueAt[i] >= 0) { const t = document.createElement('span'); t.textContent = clueAt[i]; d.appendChild(t); }
+  if (clueAt[i] >= 0) {
+    const t = document.createElement('span'); t.textContent = clueAt[i]; d.appendChild(t);
+    const b = VERDICT_BADGE[(led.verdictOf || {})[i]];
+    if (b) { const m = document.createElement('span'); m.className = 'badge ' + b.g; m.textContent = b.ch; m.title = b.t; d.appendChild(m); }
+  }
   const dv = led.nearKnown.dist[i];
   if (dv !== Infinity && dv !== 0) {
     const v = document.createElement('span'); v.className = 'dv'; v.textContent = dv;
@@ -912,6 +942,12 @@ function drawBoardCanvas() {
       g.font = '600 17px ui-monospace, monospace';
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(String(clueAt[i]), x + S / 2, y + S / 2);
+      const bd = VERDICT_BADGE[(led.verdictOf || {})[i]];
+      if (bd) {
+        g.fillStyle = bd.c; g.font = 'bold 12px system-ui, sans-serif';
+        g.textAlign = 'right'; g.textBaseline = 'top';
+        g.fillText(bd.ch, x + S - 3, y + 2);
+      }
     }
     if (st) {
       g.fillStyle = st.capitol < 0 ? C('--bad') : C('--muted');
