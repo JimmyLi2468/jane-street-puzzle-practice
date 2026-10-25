@@ -126,6 +126,14 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
 /* the export area: a download can be blocked, so the same content is always
    on the page as text (copyable) and as a picture (saveable by long-press) */
+.iterlist { display: grid; gap: 4px; }
+.iterrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 0.82rem;
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--blank); }
+.iterrow b { font-weight: 600; }
+.iterrow .n { color: var(--muted); font-family: var(--f-num); }
+.iterrow .bad { color: var(--bad); font-weight: 700; }
+.iterrow .good { color: var(--good); font-weight: 700; }
+.iterrow button { font-size: 0.75rem; padding: 2px 8px; }
 .io { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line); }
 .io-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin-right: 2px; }
 .io .btn { font-size: 0.84rem; padding: 6px 11px; }
@@ -207,6 +215,14 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
       </div>
 
       <div class="status" id="status">Paint a state, or load the corner hypothesis.</div>
+
+      <div class="io">
+        <span class="io-label">iterations</span>
+        <input class="btn" id="iterName" placeholder="name this try" style="width:9em">
+        <button class="btn" id="saveIter">Save iteration</button>
+        <button class="btn" id="exportIter">Export all</button>
+      </div>
+      <div id="iterList" class="iterlist"></div>
 
       <div class="io">
         <span class="io-label">save / share</span>
@@ -574,6 +590,39 @@ function loadPreset(p) {
   refresh();
 }
 
+/* ---------- the iteration stack ---------- */
+let iterations = [];      // {name, at, board, tally}
+
+function tallyOf(rows) {
+  const t = {};
+  for (const r of rows) t[r.verdict] = (t[r.verdict] || 0) + 1;
+  return t;
+}
+function renderIterations() {
+  const box = $('iterList');
+  if (!iterations.length) { box.innerHTML = ''; box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = iterations.map((it, i) => {
+    const bad = it.tally.CONTRADICTED || 0;
+    const forced = it.tally.FORCED || 0;
+    return '<div class="iterrow"><b>' + it.name + '</b>'
+      + '<span class="n">' + it.at.slice(5, 16).replace('T', ' ') + '</span>'
+      + '<span class="' + (bad ? 'bad' : 'good') + '">' + (bad ? bad + ' contradicted' : 'no contradiction') + '</span>'
+      + '<span class="n">' + forced + ' forced · ' + (it.tally.NEEDS_HIDDEN_CAPITOL || 0) + ' need a hidden capitol</span>'
+      + '<button class="btn" data-restore="' + i + '">Restore</button>'
+      + '<button class="btn" data-del="' + i + '">Drop</button></div>';
+  }).join('');
+  box.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', () => {
+    pushUndo();
+    loadJSON(iterations[+b.dataset.restore].board);
+    setStatus('Restored <b>' + iterations[+b.dataset.restore].name + '</b>.', 'good');
+  }));
+  box.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
+    iterations.splice(+b.dataset.del, 1);
+    renderIterations(); save();
+  }));
+}
+
 /* ---------- save and load ---------- */
 function toast(msg, kind) {
   const t = $('toast');
@@ -801,6 +850,23 @@ $('fileIn').addEventListener('change', async e => {
   e.target.value = '';
 });
 $('savePng').addEventListener('click', () => boardPNG());
+$('saveIter').addEventListener('click', () => {
+  const name = ($('iterName').value || '').trim() || ('try ' + (iterations.length + 1));
+  const board = boardJSON();
+  board.name = name;
+  iterations.push({ name: name, at: new Date().toISOString(), board: board, tally: tallyOf(lastLedger.rows) });
+  $('iterName').value = '';
+  renderIterations(); save();
+  toast('Saved iteration "' + name + '".', 'good');
+});
+$('exportIter').addEventListener('click', () => {
+  if (!iterations.length) { toast('No iterations saved yet.', 'bad'); return; }
+  const data = { format: 'metric-too-ledger-iterations/1', n: N, saved: new Date().toISOString(),
+    iterations: iterations.map(it => ({ name: it.name, at: it.at, board: it.board, tally: it.tally })) };
+  download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+    'metric-too-ledger-iterations-' + stamp() + '.json');
+  toast('Exported ' + iterations.length + ' iteration(s).', 'good');
+});
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); return; }
   if (e.key >= '0' && e.key <= '9') setPaintColor(+e.key);
@@ -817,12 +883,13 @@ for (let i = 0; i < NCOL; i++) {
 }
 
 /* ---------- persistence ---------- */
-function save() { store.set('mt2ledger', { c: colors, a: [...assumed] }); }
+function save() { store.set('mt2ledger', { c: colors, a: [...assumed], it: iterations }); }
 (function boot() {
   const saved = store.get('mt2ledger');
-  if (saved) { colors = saved.c; assumed = new Map(saved.a); }
+  if (saved) { colors = saved.c; assumed = new Map(saved.a); iterations = saved.it || []; }
   buildBoard();
   setPaintColor(0);
+  renderIterations();
   refresh();
 })();
 </script>
