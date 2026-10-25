@@ -109,7 +109,7 @@ table.ledger td { padding: 3px 4px; border-bottom: 1px solid rgba(0,0,0,.05); fo
 table.ledger tr { cursor: pointer; }
 table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .v { font-weight: 700; }
-.v.CONTRADICTED { color: var(--bad); }
+.v.CONTRADICTED, .v.UNPRODUCIBLE { color: var(--bad); }
 .v.NEEDS_HIDDEN_CAPITOL, .v.NEEDS_EXACT_PATH { color: var(--warn); }
 .v.FORCED, .v.TIGHT_GEODESIC, .v.TIGHT_CHEAPEST { color: var(--good); }
 .why { color: var(--muted); font-family: var(--f-body); font-size: 0.78rem; line-height: 1.35; }
@@ -384,6 +384,47 @@ function book(sizeOf, sources, optimistic) {
   return { dist, route };
 }
 
+/* ---------- which costs can actually be paid? ----------
+   The two books only ask whether a published number is too big or too small.
+   They never ask whether it can be paid for AT ALL: a number can sit inside
+   [lower, upper] and still be unreachable, if every walk out of that square
+   costs 3 or 7 and the square says 5.  This walks the (square, cost) graph
+   and collects every cost that some walk can really pay.  Where a size is
+   unknown the edge is charged anything in [1, known side] (or [1, board] when
+   both sides are unknown), which is a relaxation -- so on a partial board the
+   result can only ADD a contradiction, never remove one.  On a complete
+   tiling it is exact. */
+function reachableCosts(sizeOf, sources, maxCost) {
+  const NN = N * N, W = maxCost + 1;
+  const seen = new Uint8Array(NN * W), stack = [];
+  for (const s of sources) {
+    if (s < 0 || s >= NN || seen[s * W]) continue;
+    seen[s * W] = 1; stack.push([s, 0]);
+  }
+  while (stack.length) {
+    const st = stack.pop(), u = st[0], c = st[1];
+    for (const v of nbrs(u, N)) {
+      const ku = sizeOf.get(u), kv = sizeOf.get(v);
+      let lo, hi;
+      if (ku !== undefined && kv !== undefined) { lo = hi = Math.min(ku, kv); }
+      else if (ku === undefined && kv === undefined) { lo = 1; hi = NN; }
+      else { lo = 1; hi = ku !== undefined ? ku : kv; }
+      const top = Math.min(hi, maxCost - c);
+      for (let cc = c + lo; cc <= c + top; cc++) {
+        const k = v * W + cc;
+        if (!seen[k]) { seen[k] = 1; stack.push([v, cc]); }
+      }
+    }
+  }
+  const out = [];
+  for (let i = 0; i < NN; i++) {
+    const a = [];
+    for (let c = 0; c <= maxCost; c++) if (seen[i * W + c]) a.push(c);
+    out.push(a);
+  }
+  return out;
+}
+
 /* ---------- the ledger ---------- */
 function ledger() {
   const { list } = components(colors, N);
@@ -393,7 +434,7 @@ function ledger() {
     if (s.capitol >= 0) sources.add(s.capitol);
     return s;
   });
-  for (let i = 0; i < N * N; i++) if (clueAt[i] === 0) sources.add(i);   // a 0 IS a capitol
+  for (let i = 0; i < N * N; i++) if (clueAt[i] === 0 && !sizeOf.has(i)) sources.add(i);   // a 0 IS a capitol
   for (const [i, k] of assumed) { sizeOf.set(i, k); sources.add(i); }     // assumed capitols
 
   for (const s of stateInfo) {
@@ -412,21 +453,45 @@ function ledger() {
   const nearKnown = book(sizeOf, sources, true);    // optimistic: unknown squares as small as possible
   const farKnown = book(sizeOf, sources, false);    // defensible: routes through two unknown squares are not used
 
+  // A tiling is complete only when every square belongs to a state.  Only
+  // then is the set of reachable costs exact, and only then does "no walk
+  // costs exactly v" condemn the number instead of merely remarking on it.
+  const complete = sizeOf.size === N * N;
+  const maxV = CLUES.reduce((m, x) => Math.max(m, x[2]), 0);
+  const reach = reachableCosts(sizeOf, sources, maxV);
+
   const rows = [];
   for (const [r, c, v] of CLUES) {
     const i = r * N + c;
     const L = nearKnown.dist[i] === Infinity ? null : nearKnown.dist[i];
     const U = farKnown.dist[i] === Infinity ? null : farKnown.dist[i];
+    const pay = reach[i], produced = pay.indexOf(v) >= 0, cheapest = pay.length ? pay[0] : null;
     let verdict, why;
     if (L !== null && U !== null && L === U && L === v) { verdict = 'FORCED'; why = 'your assumptions pin the distance to exactly ' + v; }
     else if (U !== null && U < v) { verdict = 'CONTRADICTED'; why = 'a capitol you already know about is reachable for ' + U + ', which is cheaper than ' + v + ', so the number cannot be the minimum'; }
+    else if (complete && !produced) { verdict = 'UNPRODUCIBLE'; why = 'no walk out of this square can cost exactly ' + v + ' (the reachable costs are ' + pay.slice(0, 12).join(', ') + (pay.length > 12 ? ', ...' : '') + '), so this number cannot be produced at all'; }
     else if (U !== null && U === v) { verdict = 'TIGHT_GEODESIC'; why = 'a known capitol is reachable for at most ' + v + ', and the number says the minimum is ' + v + ', so no hidden capitol may be nearer'; }
-    else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, but the number says ' + v + ', so a hidden capitol has to be strictly nearer than that'; }
+    else if (L !== null && L > v) { verdict = 'NEEDS_HIDDEN_CAPITOL'; why = 'the nearest capitol you know about is at least ' + L + ' away, but the number says ' + v + ', so a hidden capitol has to be strictly nearer than that' + (produced ? '' : '; no walk to a known capitol costs exactly ' + v + ' either'); }
     else if (L !== null && L === v) { verdict = 'TIGHT_CHEAPEST'; why = v + ' is the floor: no capitol can be nearer than ' + v + ', and one has to sit at exactly ' + v; }
     else { verdict = 'NEEDS_EXACT_PATH'; why = 'the number sits inside the range, so a capitol has to be reachable at exactly ' + v; }
-    rows.push({ i, v, L, U, verdict, why, route: U !== null ? farKnown.route(i) : null });
+    rows.push({ i, v, L, U, verdict, why, route: U !== null ? farKnown.route(i) : null,
+                produced, reachable: pay, cheapest });
   }
-  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes };
+
+  // The satisfaction test: on a complete tiling, every published number must
+  // be produced by some walk AND be the cheapest one.  Either half alone
+  // would have been enough to miss a wrong tiling.
+  let satisfaction = null;
+  if (complete) {
+    const wrong = {};
+    rows.forEach(r => { if (r.cheapest !== r.v) wrong['(' + (r.i / N | 0) + ', ' + (r.i % N) + ')'] = { published: r.v, actual: r.cheapest, reachable: r.reachable.slice(0, 12) }; });
+    satisfaction = {
+      all_numbers_produced: rows.every(r => r.produced),
+      all_numbers_are_the_cheapest: Object.keys(wrong).length === 0,
+      wrong: wrong,
+    };
+  }
+  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction };
 }
 
 /* ---------- where could a hidden capitol be? ---------- */
@@ -549,10 +614,15 @@ function refresh() {
   $('stateCount').textContent = nStates ? nStates + ' state' + (nStates > 1 ? 's' : '') + ' · ' +
     led.list.filter(s => s.capitol >= 0).length + ' with a capitol · ' + (N * N - led.sizeOf.size) + ' squares unknown' : 'no states yet';
 
-  const bad = led.rows.filter(r => r.verdict === 'CONTRADICTED');
+  const bad = led.rows.filter(r => r.verdict === 'CONTRADICTED' || r.verdict === 'UNPRODUCIBLE');
   const st = $('status');
   if (bad.length) { st.className = 'status bad'; st.innerHTML = '<b>' + bad.length + ' published number' + (bad.length > 1 ? 's are' : ' is') + ' contradicted.</b> ' + bad.map(r => cellName(r.i) + ' reads ' + r.v + ' but ' + r.why).join('; ') + '.'; }
   else if (!nStates && !assumed.size) { st.className = 'status'; st.textContent = 'Paint a state, or load the corner hypothesis.'; }
+  else if (led.complete) {
+    const sat = led.satisfaction;
+    st.className = 'status good';
+    st.innerHTML = 'The tiling is complete and <b>every published number is produced and is the cheapest one</b>: ' + led.rows.length + '/' + led.rows.length + ' check out.';
+  }
   else { st.className = 'status good'; st.innerHTML = 'No contradiction: every published number is still reachable under these assumptions.'; }
 
   const notes = led.notes.slice();
@@ -603,7 +673,7 @@ function renderIterations() {
   if (!iterations.length) { box.innerHTML = ''; box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = iterations.map((it, i) => {
-    const bad = it.tally.CONTRADICTED || 0;
+    const bad = (it.tally.CONTRADICTED || 0) + (it.tally.UNPRODUCIBLE || 0);
     const forced = it.tally.FORCED || 0;
     return '<div class="iterrow"><b>' + it.name + '</b>'
       + '<span class="n">' + it.at.slice(5, 16).replace('T', ' ') + '</span>'
