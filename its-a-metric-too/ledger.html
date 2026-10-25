@@ -115,6 +115,9 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .pay.mid { color: var(--warn); }
 .cell .cost { position: absolute; bottom: 1px; left: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 600; color: #2f6f7d; line-height: 1; }
 .cell .cost.zero { color: var(--muted); font-weight: 500; }
+.cell .cost.match { color: #14181d; font-weight: 800; }
+.cell .cost.higher { color: #1f7a3d; font-weight: 700; }
+.cell .cost.lower { color: #b58900; font-weight: 700; }
 .build { margin: 12px 0 2px; font-size: 11px; color: #8a8f98; }
 .build a { color: #6ea8c4; }
 .pay.no { color: var(--bad); }
@@ -208,7 +211,9 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         exactly what a number below that floor demands. <b>Bottom-left</b> — the cost the current
         assumptions actually pin down: the cheapest route to a known or assumed capitol that uses only
         squares whose state size is known. Where no such route exists yet, nothing is shown there — the
-        free squares would have to be sized first.
+        free squares would have to be sized first. Its colour compares that cost with the published
+        number in the same square: <b>black and bold</b> when they agree, <b>green</b> when the calculated
+        cost is higher, <b>amber</b> when it is lower.
       </p>
 
       <div class="tools" id="tools">
@@ -649,7 +654,12 @@ function paint(i) {
   const cv = led.farKnown.dist[i];
   if (cv !== Infinity) {
     const v = document.createElement('span'); v.className = 'cost'; v.textContent = cv;
-    if (cv === 0) v.classList.add('zero');
+    const pub = clueAt[i];
+    if (pub >= 0) {
+      if (cv === pub) v.classList.add('match');        // the assumptions reproduce it
+      else if (cv > pub) v.classList.add('higher');    // the calculated cost is bigger
+      else v.classList.add('lower');                   // the calculated cost is smaller
+    } else if (cv === 0) v.classList.add('zero');      // a capitol with no published number
     d.appendChild(v);
   }
   if (selected === i) d.classList.add('sel'); else d.classList.remove('sel');
@@ -927,7 +937,14 @@ function drawBoardCanvas() {
     }
     const cv = led.farKnown.dist[i];
     if (cv !== Infinity) {
-      g.fillStyle = cv === 0 ? C('--muted') : '#2f6f7d'; g.font = '9px system-ui, sans-serif';
+      const pub = clueAt[i];
+      let col = '#2f6f7d', bold = '';
+      if (pub >= 0) {
+        if (cv === pub) { col = '#14181d'; bold = 'bold '; }
+        else if (cv > pub) { col = '#1f7a3d'; bold = 'bold '; }
+        else { col = '#b58900'; bold = 'bold '; }
+      } else if (cv === 0) col = C('--muted');
+      g.fillStyle = col; g.font = bold + '9px system-ui, sans-serif';
       g.textAlign = 'left'; g.textBaseline = 'bottom';
       g.fillText(String(cv), x + 3, y + S - 2);
     }
