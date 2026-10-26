@@ -73,6 +73,18 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 22px; al
 .plate-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
 .plate-head b { color: var(--ink); font-weight: 600; }
 .boardbox { container-type: inline-size; width: 100%; max-width: 560px; margin: 0 auto; }
+/* coordinate rulers: columns (X) on top, rows (Y) on the left */
+.axes { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); grid-template-rows: 1.6em minmax(0, 1fr); }
+.ax-corner { display: grid; place-items: center; font: 600 0.62rem/1 var(--f-num); color: var(--muted); letter-spacing: 0.04em; }
+.ax-cols { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  padding: 0 2.5px 2px; }
+.ax-rows { display: grid; grid-template-rows: repeat(var(--n), minmax(0, 1fr));
+  padding: 2.5px 2px 2.5px 0; }
+.ax-cols span, .ax-rows span { display: grid; place-items: center;
+  font: 500 max(8px, calc(100cqw / var(--n) * 0.20)) / 1 var(--f-num);
+  font-variant-numeric: tabular-nums; color: var(--muted); }
+.ax-rows span { justify-items: end; padding-right: 2px; }
+.axes .axis-note { position: absolute; }
 #board {
   display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); grid-rows: repeat(var(--n), minmax(0, 1fr));
   width: 100%; aspect-ratio: 1; border: 2.5px solid var(--ink); touch-action: none; user-select: none; -webkit-user-select: none;
@@ -206,8 +218,17 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
   <main>
     <div class="plate">
       <div class="plate-head"><span><b>Original</b> · 11×11</span><span id="stateCount">no states yet</span></div>
-      <div class="boardbox"><div id="board" style="--n:11"></div></div>
+      <div class="boardbox">
+        <div class="axes" style="--n:11">
+          <div class="ax-corner" title="rows (Y) — index down the left"><span>r</span></div>
+          <div class="ax-cols" id="axCols"></div>
+          <div class="ax-rows" id="axRows"></div>
+          <div id="board" style="--n:11"></div>
+        </div>
+      </div>
       <p class="hint" id="cellKey">
+        <b>Coordinates</b> — columns (X) are numbered across the top, rows (Y) down the left;
+        a square is named <b>rNcM</b>, so r2c5 is column 5 of row 2.
         <b>Top-left of a square</b> — the area of the state it is in; a <b>✱</b> means that state has
         <b>no capitol</b> (its symmetries fix more than one square, or none), so it contributes no
         destination and every step inside it costs the whole area. <b>Bottom-right</b> — the cheapest
@@ -260,7 +281,7 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         <label>PNG preview — long-press it to save</label>
         <img id="pngOut" alt="the painted board">
       </div>
-      <div class="build">build 2026-10-25c · 两轴版(违反轴 + 满足轴 PRODUCED / TUNABLE / UNPAYABLE)· 假想首都必须是真州(大小须为奇数)· <a href="https://github.com/johnlam1968/jane-street-puzzle-practice/tree/feat/assumption-ledger" target="_blank" rel="noopener">源码</a></div>
+      <div class="build">build 2026-10-27a · 坐标轴(列=X 在上,行=Y 在左)· 两轴版(违反轴 + 满足轴 PRODUCED / TUNABLE / UNPAYABLE)· 假想首都必须是真州(大小须为奇数)· <a href="https://github.com/johnlam1968/jane-street-puzzle-practice/tree/feat/assumption-ledger" target="_blank" rel="noopener">源码</a></div>
       <textarea id="jsonFallback" rows="6" spellcheck="false" hidden></textarea>
     </div>
 
@@ -680,6 +701,29 @@ function buildBoard() {
     d.className = 'cell'; d.dataset.i = i;
     b.appendChild(d);
   }
+  buildAxes();
+}
+
+/* Coordinate rulers.  The page names a square rNcM -- r is the row (the Y
+   axis, down the left) and c the column (the X axis, across the top).  The
+   rulers are separate grids that share the board's inner width/height, so
+   the numbers line up with the cells they name. */
+function buildAxes() {
+  const cols = $('axCols'), rows = $('axRows');
+  if (!cols || !rows) return;
+  cols.innerHTML = ''; rows.innerHTML = '';
+  for (let c = 0; c < N; c++) {
+    const s = document.createElement('span');
+    s.textContent = String(c);
+    s.title = 'column ' + c;
+    cols.appendChild(s);
+  }
+  for (let r = 0; r < N; r++) {
+    const s = document.createElement('span');
+    s.textContent = String(r);
+    s.title = 'row ' + r;
+    rows.appendChild(s);
+  }
 }
 function paint(i) {
   const d = $('board').children[i];
@@ -944,8 +988,8 @@ function loadJSON(data) {
   refresh();
 }
 function drawBoardCanvas() {
-  const S = 46, pad = 18, head = 62, foot = 78, dpr = 2;
-  const W = pad * 2 + S * N, H = head + S * N + foot;
+  const S = 46, pad = 18, gut = 24, head = 62, foot = 78, dpr = 2;
+  const W = pad * 2 + gut + S * N, H = head + gut + S * N + foot;
   const cv = document.createElement('canvas');
   cv.width = W * dpr; cv.height = H * dpr;
   const g = cv.getContext('2d');
@@ -961,7 +1005,7 @@ function drawBoardCanvas() {
   g.fillText(new Date().toLocaleString() + '  |  ' + led.list.length + ' states, ' +
     led.list.filter(s => s.capitol >= 0).length + ' with a capitol, ' + assumed.size + ' assumed capitols',
     pad, 44);
-  const x0 = pad, y0 = head;
+  const x0 = pad + gut, y0 = head + gut;
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     const i = r * N + c, x = x0 + c * S, y = y0 + r * S;
     const st = led.list.find(s => s.cells.includes(i));
@@ -1022,6 +1066,21 @@ function drawBoardCanvas() {
   }
   g.strokeStyle = C('--ink'); g.lineWidth = 3;
   g.strokeRect(x0, y0, N * S, N * S);
+  /* coordinate rulers, same convention as the page: columns (X) across the
+     top, rows (Y) down the left */
+  g.fillStyle = C('--muted'); g.font = '11px ui-monospace, monospace';
+  for (let c = 0; c < N; c++) {
+    g.textAlign = 'center'; g.textBaseline = 'bottom';
+    g.fillText(String(c), x0 + c * S + S / 2, y0 - 7);
+  }
+  for (let r = 0; r < N; r++) {
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    g.fillText(String(r), x0 - 7, y0 + r * S + S / 2);
+  }
+  g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  g.font = '10px ui-monospace, monospace';
+  g.fillText('c', x0 - 14, y0 - 7);
+  g.fillText('r', x0 - 14, y0 - 22);
   const tally = {};
   for (const row of led.rows) tally[row.verdict] = (tally[row.verdict] || 0) + 1;
   g.fillStyle = C('--muted'); g.font = '11px system-ui, sans-serif';
