@@ -92,7 +92,13 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 22px; al
 }
 .cell { position: relative; display: grid; place-items: center; background: var(--blank);
   border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
-  font-family: var(--f-num); font-weight: 600; font-size: calc(100cqw / var(--n) * 0.34); font-variant-numeric: tabular-nums; color: var(--ink); }
+  font-family: var(--f-num); font-weight: 600; font-size: calc(100cqw / var(--n) * 0.34); font-variant-numeric: tabular-nums; color: var(--ink);
+  /* Walls.  Colour alone is not enough for a colour-weak eye, so every edge
+     where a state ends is drawn as a bold line as well.  Each edge is drawn
+     once, by the cell on its upper-left side, so no line is doubled up. */
+  --wall: clamp(1.6px, 0.55cqw, 3.5px);
+  --wE: 0 0 0 transparent; --wS: 0 0 0 transparent;
+  box-shadow: var(--wE), var(--wS); }
 .cell .sz { position: absolute; top: 1px; left: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 500; color: var(--muted); line-height: 1; }
 .cell .sz.nocap { color: var(--bad); font-weight: 700; }
 .cell .dv { position: absolute; bottom: 1px; right: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 500; color: var(--muted); line-height: 1; }
@@ -355,7 +361,8 @@ const store = {
 let colors = new Array(N * N).fill(-1);   // state id per square, -1 = unknown
 let assumed = new Map();                  // square -> assumed state size of its capitol
 let tool = 'paint', paintColor = 0, selected = -1;
-let painting = false, undoStack = [];
+let undoStack = [];
+const pointers = new Set();    // the fingers that are down on the board right now
 
 /* ---------- geometry (same rule kernel as the other pages) ---------- */
 function nbrs(i, n) {
@@ -562,7 +569,7 @@ const VERDICT_BADGE = {
 
 /* ---------- the ledger ---------- */
 function ledger() {
-  const { list } = components(colors, N);
+  const { comp, list } = components(colors, N);
   const sizeOf = new Map(), sources = new Set(), notes = [];
   const stateInfo = list.map((s, idx) => {
     for (const c of s.cells) sizeOf.set(c, s.cells.length);
@@ -654,7 +661,7 @@ function ledger() {
       wrong: wrong,
     };
   }
-  return { list: stateInfo, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction, verdictOf };
+  return { list: stateInfo, comp, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction, verdictOf };
 }
 
 /* ---------- where could a hidden capitol be? ---------- */
@@ -730,6 +737,11 @@ function paint(i) {
   const led = lastLedger;
   const col = colors[i] >= 0 ? 'var(' + TONES[colors[i] % NCOL] + ')' : 'var(--blank)';
   d.style.background = col;
+  // The walls.  A square with no state of its own counts as different, so the
+  // edge of a painted region against the blank board is a wall too.
+  const rr = (i / N) | 0, cc = i % N, st = led.comp[i];
+  d.style.setProperty('--wE', (cc < N - 1 && led.comp[i + 1] !== st) ? 'inset calc(-1 * var(--wall)) 0 0 var(--ink)' : '0 0 0 transparent');
+  d.style.setProperty('--wS', (rr < N - 1 && led.comp[i + N] !== st) ? 'inset 0 calc(-1 * var(--wall)) 0 var(--ink)' : '0 0 0 transparent');
   d.innerHTML = '';
   if (colors[i] >= 0) {
     const s = led.list.find(s => s.cells.includes(i));
@@ -916,8 +928,8 @@ function renderIterations() {
       + '<button class="btn" data-del="' + i + '">Drop</button></div>';
   }).join('');
   box.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', () => {
-    pushUndo();
-    loadJSON(iterations[+b.dataset.restore].board);
+    const res = loadJSON(iterations[+b.dataset.restore].board);
+    if (res && res.ok === false) { setStatus(res.message, 'bad'); return; }
     setStatus('Restored <b>' + iterations[+b.dataset.restore].name + '</b>.', 'good');
   }));
   box.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
@@ -978,14 +990,51 @@ function loadJSON(data) {
   // accepts the exported shape and the plain preset shape
   const cellsOf = st => (Array.isArray(st) && Array.isArray(st[0]) && typeof st[0][0] === 'number')
     ? st : (st.cells || []);
-  colors = new Array(N * N).fill(-1);
-  (data.states || []).forEach((st, id) => cellsOf(st).forEach(([r, c]) => { colors[r * N + c] = id; }));
+  const states = data.states || [];
+
+  // A state may ask for a colour of its own -- that is exactly what the
+  // `colour` field of an exported board is for.  Without one, the state keeps
+  // the number of its place in the list.  The number is only a LABEL: two
+  // states that share a label AND touch each other would melt into one, so
+  // the labels are checked against the partition the file describes before
+  // anything is painted.  A file that asks for the impossible is refused
+  // whole, rather than half-loaded.
+  const labels = new Array(N * N).fill(-1);
+  const wanted = [];
+  states.forEach((st, id) => {
+    const ask = (st && !Array.isArray(st) && Number.isInteger(st.colour)) ? st.colour : null;
+    const label = (ask !== null && ask >= 0) ? ask : id;
+    wanted.push(label);
+    cellsOf(st).forEach(([r, c]) => { if (r >= 0 && c >= 0 && r < N && c < N) labels[r * N + c] = label; });
+  });
+
+  const { comp } = components(labels, N);
+  const owner = new Map();                       // piece -> the state that owns it
+  for (let id = 0; id < states.length; id++) {
+    const cells = cellsOf(states[id]).filter(p => p && p.length >= 2 && p[0] >= 0 && p[1] >= 0 && p[0] < N && p[1] < N);
+    if (!cells.length) continue;
+    const first = cells[0][0] * N + cells[0][1];
+    const cid = comp[first];
+    for (const p of cells) if (comp[p[0] * N + p[1]] !== cid) {
+      return { ok: false, message: 'The state at ' + cellName(first) + ' is not one connected shape, so it cannot carry a colour of its own.' };
+    }
+    if (owner.has(cid)) {
+      const was = owner.get(cid);
+      return { ok: false, message: 'Colour conflict: the states at ' + cellName(was.cell) + ' and ' + cellName(first)
+        + ' both ask for colour ' + wanted[id] + ' and they touch, so they would melt into a single state. Give one of them a different colour.' };
+    }
+    owner.set(cid, { id: id, cell: first });
+  }
+
+  pushUndo();                                    // snapshot the board we are about to replace
+  colors = labels;
   assumed = new Map();
   (data.assumed_capitols || data.assumed || []).forEach(a => {
     if (Array.isArray(a)) { const [r, c, k] = a; assumed.set(r * N + c, k == null ? 1 : k); }
     else { const [r, c] = a.cell; assumed.set(r * N + c, a.state_size || 1); }
   });
   refresh();
+  return { ok: true, states: states.length };
 }
 function drawBoardCanvas() {
   const S = 46, pad = 18, gut = 24, head = 62, foot = 78, dpr = 2;
@@ -1064,6 +1113,15 @@ function drawBoardCanvas() {
     g.beginPath(); g.moveTo(x0 + i * S, y0); g.lineTo(x0 + i * S, y0 + N * S); g.stroke();
     g.beginPath(); g.moveTo(x0, y0 + i * S); g.lineTo(x0 + N * S, y0 + i * S); g.stroke();
   }
+  // the same walls the page draws, so the picture says the same thing
+  g.strokeStyle = C('--ink'); g.lineWidth = 3;
+  g.beginPath();
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const i = r * N + c, st = led.comp[i];
+    if (c < N - 1 && led.comp[i + 1] !== st) { g.moveTo(x0 + (c + 1) * S, y0 + r * S); g.lineTo(x0 + (c + 1) * S, y0 + (r + 1) * S); }
+    if (r < N - 1 && led.comp[i + N] !== st) { g.moveTo(x0 + c * S, y0 + (r + 1) * S); g.lineTo(x0 + (c + 1) * S, y0 + (r + 1) * S); }
+  }
+  g.stroke();
   g.strokeStyle = C('--ink'); g.lineWidth = 3;
   g.strokeRect(x0, y0, N * S, N * S);
   /* coordinate rulers, same convention as the page: columns (X) across the
@@ -1109,17 +1167,25 @@ function boardPNG() {
 }
 
 /* ---------- events ---------- */
+/* Two fingers can paint at the same time -- handy on a tablet, where you can
+   hold one in each hand and tap the two halves of a symmetric pair.  Each
+   finger is tracked on its own, so lifting one does not stop the other, and
+   the whole stroke is a single undo step. */
 $('board').addEventListener('pointerdown', e => {
   const el = e.target.closest('.cell'); if (!el) return;
-  e.preventDefault(); pushUndo(); painting = true; setCell(+el.dataset.i);
+  e.preventDefault();
+  if (pointers.size === 0) pushUndo();
+  pointers.add(e.pointerId);
+  setCell(+el.dataset.i);
 });
 $('board').addEventListener('pointermove', e => {
-  if (!painting) return;
+  if (!pointers.has(e.pointerId)) return;
   const el = document.elementFromPoint(e.clientX, e.clientY);
   const c = el && el.closest && el.closest('.cell');
   if (c && c.parentNode === $('board')) setCell(+c.dataset.i);
 });
-window.addEventListener('pointerup', () => { painting = false; });
+window.addEventListener('pointerup', e => { pointers.delete(e.pointerId); });
+window.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); });
 $('tools').addEventListener('click', e => {
   const chip = e.target.closest('.chip[data-tool]');
   if (chip) {
@@ -1178,8 +1244,12 @@ $('fileIn').addEventListener('change', async e => {
   const f = e.target.files[0];
   if (!f) return;
   try {
-    pushUndo();
-    loadJSON(JSON.parse(await f.text()));
+    const res = loadJSON(JSON.parse(await f.text()));
+    if (res && res.ok === false) {
+      setStatus(res.message, 'bad');
+      toast(res.message, 'bad');
+      return;
+    }
     setStatus('Loaded ' + f.name + '.', 'good');
   } catch (err) {
     setStatus('Could not read that file: ' + err.message, 'bad');
