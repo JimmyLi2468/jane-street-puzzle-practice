@@ -97,10 +97,10 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 22px; al
      where a state ends is drawn as a bold line as well.  Each edge is drawn
      once, by the cell on its upper-left side, so no line is doubled up. */
   --wall: clamp(1.6px, 0.55cqw, 3.5px);
-  --wE: 0 0 0 transparent; --wS: 0 0 0 transparent;
-  box-shadow: var(--wE), var(--wS); }
+  --wN: 0 0 0 transparent; --wE: 0 0 0 transparent; --wS: 0 0 0 transparent; --wW: 0 0 0 transparent;
+  box-shadow: var(--wN), var(--wE), var(--wS), var(--wW); }
 .cell .sz { position: absolute; top: 1px; left: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 500; color: var(--muted); line-height: 1; }
-.cell .sz.nocap { color: var(--bad); font-weight: 700; }
+.cell .sz.nocap { color: var(--warn); font-weight: 700; }
 .cell .dv { position: absolute; bottom: 1px; right: 3px; font-size: max(8px, calc(100cqw / var(--n) * 0.19)); font-weight: 500; color: var(--muted); line-height: 1; }
 .cell .dv.bad { color: var(--bad); font-weight: 700; }
 .cell .cap { position: absolute; width: 24%; aspect-ratio: 1; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 2px var(--sheet); }
@@ -237,7 +237,11 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
         a square is named <b>rNcM</b>, so r2c5 is column 5 of row 2.
         <b>Top-left of a square</b> — the area of the state it is in; a <b>✱</b> means that state has
         <b>no capitol</b> (its symmetries fix more than one square, or none), so it contributes no
-        destination and every step inside it costs the whole area. <b>Bottom-right</b> — the cheapest
+        destination and every step inside it costs the whole area. <b>Walls</b> — the bold lines between
+        squares are the state borders, and they carry the symmetry check: a <b>dark</b> line is a plain
+        border, an <b>amber</b> line marks a state with no capitol (it goes nowhere), and a <b>red</b> line
+        marks a painted region with no symmetry at all — that is not a state yet, so repaint it with a
+        mirror or a rotation. <b>Bottom-right</b> — the cheapest
         distance from that square to a capitol we already know about, if every unknown square were as
         small as possible. It is a floor, not the answer: a hidden capitol can be nearer, which is
         exactly what a number below that floor demands. <b>Bottom-left</b> — the cost the current
@@ -576,6 +580,14 @@ function ledger() {
     if (s.capitol >= 0) sources.add(s.capitol);
     return s;
   });
+  // The symmetry check, made spatial: what the notes say about a state, the
+  // walls say at a glance.  0 = fine, 1 = a legal state with no capitol (it
+  // goes nowhere), 2 = no symmetry at all (not a state yet).
+  const flags = new Uint8Array(N * N);
+  for (const s of stateInfo) {
+    const f = !s.sym ? 2 : (s.capitol < 0 ? 1 : 0);
+    if (f) for (const c of s.cells) flags[c] = f;
+  }
   for (let i = 0; i < N * N; i++) if (clueAt[i] === 0 && !sizeOf.has(i)) sources.add(i);   // a 0 IS a capitol
   for (const [i, k] of assumed) { sizeOf.set(i, k); sources.add(i); }     // assumed capitols
 
@@ -661,7 +673,7 @@ function ledger() {
       wrong: wrong,
     };
   }
-  return { list: stateInfo, comp, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction, verdictOf };
+  return { list: stateInfo, comp, flags, sizeOf, sources, nearKnown, farKnown, rows, notes, complete, satisfaction, verdictOf };
 }
 
 /* ---------- where could a hidden capitol be? ---------- */
@@ -737,11 +749,25 @@ function paint(i) {
   const led = lastLedger;
   const col = colors[i] >= 0 ? 'var(' + TONES[colors[i] % NCOL] + ')' : 'var(--blank)';
   d.style.background = col;
-  // The walls.  A square with no state of its own counts as different, so the
-  // edge of a painted region against the blank board is a wall too.
+  // The walls.  Each edge is drawn once, by the cell on its upper-left side;
+  // an edge that sits on the rim of the board is drawn by the cell on it.  A
+  // square with no state of its own counts as different, so the edge of a
+  // painted region against the blank board is a wall too.  The colour of a
+  // wall is the worst of its two sides: a region with no symmetry at all is
+  // outlined in red, a state with no capitol in amber.
   const rr = (i / N) | 0, cc = i % N, st = led.comp[i];
-  d.style.setProperty('--wE', (cc < N - 1 && led.comp[i + 1] !== st) ? 'inset calc(-1 * var(--wall)) 0 0 var(--ink)' : '0 0 0 transparent');
-  d.style.setProperty('--wS', (rr < N - 1 && led.comp[i + N] !== st) ? 'inset 0 calc(-1 * var(--wall)) 0 var(--ink)' : '0 0 0 transparent');
+  const flag = j => (j >= 0 && j < N * N) ? led.flags[j] : 0;
+  const wallColour = (a, b) => {
+    const f = Math.max(flag(a), flag(b));
+    return f === 2 ? 'var(--bad)' : (f === 1 ? 'var(--warn)' : 'var(--ink)');
+  };
+  const plain = '0 0 0 transparent';
+  d.style.setProperty('--wN', (rr === 0 && st >= 0) ? 'inset 0 calc(-1 * var(--wall)) 0 ' + wallColour(i, i) : plain);
+  d.style.setProperty('--wW', (cc === 0 && st >= 0) ? 'inset calc(-1 * var(--wall)) 0 0 ' + wallColour(i, i) : plain);
+  d.style.setProperty('--wE', cc === N - 1 ? (st >= 0 ? 'inset calc(-1 * var(--wall)) 0 0 ' + wallColour(i, i) : plain)
+    : (led.comp[i + 1] !== st ? 'inset calc(-1 * var(--wall)) 0 0 ' + wallColour(i, i + 1) : plain));
+  d.style.setProperty('--wS', rr === N - 1 ? (st >= 0 ? 'inset 0 calc(-1 * var(--wall)) 0 ' + wallColour(i, i) : plain)
+    : (led.comp[i + N] !== st ? 'inset 0 calc(-1 * var(--wall)) 0 ' + wallColour(i, i + N) : plain));
   d.innerHTML = '';
   if (colors[i] >= 0) {
     const s = led.list.find(s => s.cells.includes(i));
@@ -1114,14 +1140,32 @@ function drawBoardCanvas() {
     g.beginPath(); g.moveTo(x0, y0 + i * S); g.lineTo(x0 + N * S, y0 + i * S); g.stroke();
   }
   // the same walls the page draws, so the picture says the same thing
-  g.strokeStyle = C('--ink'); g.lineWidth = 3;
-  g.beginPath();
+  const flag = j => (j >= 0 && j < N * N) ? led.flags[j] : 0;
+  const segs = [[], [], []];
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     const i = r * N + c, st = led.comp[i];
-    if (c < N - 1 && led.comp[i + 1] !== st) { g.moveTo(x0 + (c + 1) * S, y0 + r * S); g.lineTo(x0 + (c + 1) * S, y0 + (r + 1) * S); }
-    if (r < N - 1 && led.comp[i + N] !== st) { g.moveTo(x0 + c * S, y0 + (r + 1) * S); g.lineTo(x0 + (c + 1) * S, y0 + (r + 1) * S); }
+    if (c < N - 1 && led.comp[i + 1] !== st) {
+      segs[Math.max(flag(i), flag(i + 1))].push([x0 + (c + 1) * S, y0 + r * S, x0 + (c + 1) * S, y0 + (r + 1) * S]);
+    }
+    if (r < N - 1 && led.comp[i + N] !== st) {
+      segs[Math.max(flag(i), flag(i + N))].push([x0 + c * S, y0 + (r + 1) * S, x0 + (c + 1) * S, y0 + (r + 1) * S]);
+    }
+    // the rim of the board: a painted region ends there too
+    if (st >= 0) {
+      if (c === 0) segs[flag(i)].push([x0, y0 + r * S, x0, y0 + (r + 1) * S]);
+      if (r === 0) segs[flag(i)].push([x0 + c * S, y0, x0 + (c + 1) * S, y0]);
+      if (c === N - 1) segs[flag(i)].push([x0 + N * S, y0 + r * S, x0 + N * S, y0 + (r + 1) * S]);
+      if (r === N - 1) segs[flag(i)].push([x0 + c * S, y0 + N * S, x0 + (c + 1) * S, y0 + N * S]);
+    }
   }
-  g.stroke();
+  g.lineWidth = 3;
+  [['--ink', 0], ['--warn', 1], ['--bad', 2]].forEach(pair => {
+    if (!segs[pair[1]].length) return;
+    g.strokeStyle = C(pair[0]);
+    g.beginPath();
+    for (const s of segs[pair[1]]) { g.moveTo(s[0], s[1]); g.lineTo(s[2], s[3]); }
+    g.stroke();
+  });
   g.strokeStyle = C('--ink'); g.lineWidth = 3;
   g.strokeRect(x0, y0, N * S, N * S);
   /* coordinate rulers, same convention as the page: columns (X) across the
