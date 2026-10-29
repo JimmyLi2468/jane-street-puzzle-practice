@@ -146,6 +146,9 @@ table.ledger tr:hover td { background: rgba(0,0,0,.04); }
 .pay.no { color: var(--bad); }
 .v.NEEDS_HIDDEN_CAPITOL, .v.NEEDS_EXACT_PATH { color: var(--warn); }
 .v.FORCED, .v.TIGHT_GEODESIC, .v.TIGHT_CHEAPEST { color: var(--good); }
+.v.KEEP { color: var(--good); }
+.v.PARK { color: var(--muted); }
+.v.BACKTRACK { color: var(--bad); }
 .why { color: var(--muted); font-family: var(--f-body); font-size: 0.78rem; line-height: 1.35; }
 .route { color: var(--muted); font-size: 0.72rem; }
 .hint { color: var(--muted); font-size: 0.85rem; }
@@ -296,6 +299,16 @@ details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
     </div>
 
     <div class="panel">
+      <div id="candPanel" hidden>
+        <h2>Candidates</h2>
+        <div class="hint" id="candMeta"></div>
+        <div style="max-height:36vh;overflow:auto">
+          <table class="ledger" id="candTable">
+            <thead><tr><th>candidate</th><th>goal.py</th><th>this page</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
       <div>
         <h2>Verdicts</h2>
         <div class="tally" id="tally"></div>
@@ -1012,7 +1025,10 @@ function boardJSON() {
     })),
   };
 }
-function loadJSON(data) {
+/* A board, turned into the two arrays the page works with.  Nothing is
+   painted here: the labels are checked against the partition the file claims
+   first, so a file that asks for the impossible is refused whole. */
+function parseBoard(data) {
   // accepts the exported shape and the plain preset shape
   const cellsOf = st => (Array.isArray(st) && Array.isArray(st[0]) && typeof st[0][0] === 'number')
     ? st : (st.cells || []);
@@ -1052,15 +1068,110 @@ function loadJSON(data) {
     owner.set(cid, { id: id, cell: first });
   }
 
-  pushUndo();                                    // snapshot the board we are about to replace
-  colors = labels;
-  assumed = new Map();
+  const assumed = new Map();
   (data.assumed_capitols || data.assumed || []).forEach(a => {
     if (Array.isArray(a)) { const [r, c, k] = a; assumed.set(r * N + c, k == null ? 1 : k); }
     else { const [r, c] = a.cell; assumed.set(r * N + c, a.state_size || 1); }
   });
+  return { ok: true, labels: labels, assumed: assumed, states: states };
+}
+
+function loadJSON(data) {
+  // a bundle of candidates from goal.py: not a board, a LIST of boards
+  if (data && data.format === 'metric-too-ledger-candidates/1') return loadBundle(data);
+  const p = parseBoard(data);
+  if (!p.ok) return p;
+  pushUndo();                                    // snapshot the board we are about to replace
+  colors = p.labels;
+  assumed = p.assumed;
   refresh();
-  return { ok: true, states: states.length };
+  return { ok: true, states: p.states.length };
+}
+
+/* Judge a board without painting it: the ledger runs on a COPY of the board,
+   so the page can check every candidate of a bundle without disturbing what
+   is on screen. */
+function judgeBoard(data) {
+  const p = parseBoard(data);
+  if (!p.ok) return null;
+  const savedC = colors, savedA = assumed;
+  colors = p.labels; assumed = p.assumed;
+  const led = ledger();
+  colors = savedC; assumed = savedA;
+  return led;
+}
+
+/* The three words goal.py uses, computed here from the page's OWN verdicts:
+     BACKTRACK  some published number is contradicted
+     KEEP       the target square is pinned by these assumptions
+     PARK       neither -- not dead, just not decided yet              */
+const PRODUCES = ['FORCED', 'TIGHT_GEODESIC', 'TIGHT_CHEAPEST'];
+function pageWord(led, target) {
+  if (!led) return null;
+  if (led.rows.some(r => r.verdict === 'CONTRADICTED')) return 'BACKTRACK';
+  const v = target >= 0 ? led.verdictOf[target] : null;
+  if (v && PRODUCES.indexOf(v) >= 0) return 'KEEP';
+  return 'PARK';
+}
+function cellIndex(name) {
+  const m = /^r(\d+)c(\d+)$/.exec(String(name || '').trim());
+  if (!m) return -1;
+  const r = +m[1], c = +m[2];
+  return (r >= 0 && c >= 0 && r < N && c < N) ? r * N + c : -1;
+}
+
+/* A bundle of candidates.  goal.py proposes the shapes; this page judges
+   every one of them again -- nothing that was stored is taken on trust --
+   and a click puts a candidate on the board so it can be worked on. */
+let candidates = null;
+function loadBundle(data) {
+  const list = data.candidates || [];
+  const target = cellIndex(data.cell);
+  const rows = list.map((c, i) => {
+    const led = judgeBoard(c.board || c);
+    const word = pageWord(led, target);
+    const mine = led && target >= 0 ? led.verdictOf[target] : null;
+    const said = c.word || null;
+    const cap = c.capitol ? 'cap ' + c.capitol[0] + 'c' + c.capitol[1] : 'no capitol';
+    return {
+      i: i, name: c.name || ('size ' + (c.size || '?')), word: word, said: said,
+      short: 'size ' + (c.size == null ? '?' : c.size) + ' · ' + cap,
+      mine: mine, agree: !said || said === word,
+      tally: led ? led.rows.reduce((m, r) => (m[r.verdict] = (m[r.verdict] || 0) + 1, m), {}) : {},
+    };
+  });
+  candidates = list;
+  const panel = $('candPanel');
+  panel.hidden = false;
+  $('candMeta').innerHTML = '<b>' + list.length + '</b> candidate states proposed for <b>' + (data.cell || '?')
+    + '</b> (it reads ' + (data.published == null ? '?' : data.published) + '), sizes '
+    + ((data.sizes || []).join(', ') || '?') + '. <b>Each one is judged again here</b> — the word on the left is '
+    + 'goal.py\'s, the word on the right is this page\'s, and they come from different code.'
+    + (data.truncated ? ' <b>This round stopped at the candidate limit: it did NOT exhaust the possibilities.</b>' : '');
+  const SHORT = { FORCED: 'FORCED', TIGHT_GEODESIC: 'TIGHT', TIGHT_CHEAPEST: 'TIGHT',
+                  NEEDS_EXACT_PATH: 'NEEDS', NEEDS_HIDDEN_CAPITOL: 'NEEDS',
+                  CONTRADICTED: 'CONTRADICTED', UNPRODUCIBLE: 'UNPRODUCIBLE' };
+  const tb = $('candTable').querySelector('tbody');
+  tb.innerHTML = rows.map(r => {
+    const short = r.mine ? (SHORT[r.mine] || r.mine) : '';
+    const tally = Object.keys(r.tally).sort().map(k => k.toLowerCase() + ' ' + r.tally[k]).join(', ');
+    return '<tr title="' + tally + '"><td>' + r.short + '</td>'
+      + '<td><b class="v ' + (r.said || 'PARK') + '">' + (r.said || '?') + '</b></td>'
+      + '<td><b class="v ' + (r.word || 'PARK') + '">' + (r.word || '?') + '</b>'
+      + (short ? ' <span class="hint">' + short + '</span>' : '')
+      + (r.agree ? '' : ' <span class="v BACKTRACK">!</span>') + '</td>'
+      + '<td><button class="btn" data-cand="' + r.i + '">load</button></td></tr>';
+  }).join('');
+  tb.querySelectorAll('[data-cand]').forEach(b => b.addEventListener('click', () => {
+    const c = candidates[+b.dataset.cand];
+    const res = loadJSON(c.board || c);
+    if (res && res.ok === false) { setStatus(res.message, 'bad'); return; }
+    setStatus('Loaded candidate: ' + (c.name || ''), 'good');
+  }));
+  const bad = rows.filter(r => !r.agree).length;
+  setStatus('Loaded ' + list.length + ' candidate' + (list.length === 1 ? '' : 's') + ' for '
+    + (data.cell || '?') + (bad ? ' — <b>' + bad + ' disagree</b> with goal.py.' : ' — this page agrees with goal.py on all of them.'), bad ? 'warn' : 'good');
+  return { ok: true, states: 0, candidates: list.length };
 }
 function drawBoardCanvas() {
   const S = 46, pad = 18, gut = 24, head = 62, foot = 78, dpr = 2;
@@ -1294,6 +1405,7 @@ $('fileIn').addEventListener('change', async e => {
       toast(res.message, 'bad');
       return;
     }
+    if (res && res.bundle) return;          // the bundle sets its own status
     setStatus('Loaded ' + f.name + '.', 'good');
   } catch (err) {
     setStatus('Could not read that file: ' + err.message, 'bad');
